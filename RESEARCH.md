@@ -290,5 +290,3 @@ richer than generic OWM for Danish/Baltic/North-Sea waters.
 - SignalK spec issue #643 (forecasts/warnings): <https://github.com/SignalK/specification/issues/643>
 - Non-SignalK DMI clients: <https://github.com/LasseRegin/dmi-open-data>, <https://github.com/1oly/dmi-forecast-edr>, <https://github.com/rugaard/dmi>
 - Ecosystem plugins checked: signalk-openweather (<https://github.com/inspired-technologies/signalk-openweather-plugin>, <https://github.com/panaaj/signalk-openweather-provider>), signalk-noaa-weather (<https://github.com/sbender9/signalk-noaa-weather>), signalk-virtual-weather-sensors (<https://github.com/NearlCrews/signalk-virtual-weather-sensors>), signalk-weatherflow (<https://github.com/motamman/signalk-weatherflow>)
-</content>
-</invoke>
