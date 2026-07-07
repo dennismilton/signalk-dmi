@@ -46,6 +46,9 @@ module.exports = function (app) {
 
   let timer = null;
   let options = {};
+  // Last-good value per path, so a poll where a DMI source 429s re-publishes the
+  // previous value (with a fresh timestamp) instead of dropping the path.
+  const lastGood = {};
 
   plugin.schema = {
     type: 'object',
@@ -105,23 +108,70 @@ module.exports = function (app) {
   }
 
   // ---- forecast fetch (shared by provider + delta poll) -------------------
+  const gap = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // One EDR collection, resilient: on failure (429, land/out-of-grid, timeout)
+  // log and return [] so a single source never sinks the whole forecast.
+  async function tryEdr(collection, lon, lat, params, range, req) {
+    try {
+      return await edrPosition(collection, lon, lat, params, range, req);
+    } catch (e) {
+      app.error(`forecast source ${collection} skipped: ${e.message}`);
+      return [];
+    }
+  }
+
+  // For the on-demand Weather API path: fetch the 3 collections in PARALLEL with a
+  // bounded per-request budget (2 tries, 8s timeout) so the HTTP call returns
+  // promptly even when DMI is slow — never hangs.
+  const FORECAST_REQ = { tries: 2, timeoutMs: 6000 };
   async function fetchForecast(pos, range) {
     const { latitude: lat, longitude: lon } = pos;
-    const harmonie = await edrPosition(options.harmonieCollection, lon, lat, t.HARMONIE_PARAMS, range);
-    const wam = options.waves ? await edrPosition(options.wamCollection, lon, lat, t.WAM_PARAMS, range) : [];
-    const dkss = options.ocean ? await edrPosition(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range) : [];
+    const [harmonie, wam, dkss] = await Promise.all([
+      tryEdr(options.harmonieCollection, lon, lat, t.HARMONIE_PARAMS, range, FORECAST_REQ),
+      options.waves ? tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range, FORECAST_REQ) : Promise.resolve([]),
+      options.ocean ? tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range, FORECAST_REQ) : Promise.resolve([]),
+    ]);
     return { harmonie, wam, dkss };
   }
 
   // ---- Weather API provider methods ---------------------------------------
+  let lastForecast = null; // last non-empty point set, so a DMI-busy request still answers fast
   async function getForecasts(position, type, opts) {
     const now = Date.now();
     const range = { from: ISO(now), to: ISO(now + options.forecastHours * 3600000) };
-    const { harmonie, wam, dkss } = await fetchForecast(position, range);
-    let points = t.buildForecast(harmonie, wam, dkss, 'point');
+    // Fetch runs in the background and refreshes the cache; it never blocks the
+    // response for more than the deadline below.
+    const fetchP = fetchForecast(position, range)
+      .then(({ harmonie, wam, dkss }) => {
+        const pts = t.buildForecast(harmonie, wam, dkss, 'point');
+        if (pts.length) lastForecast = pts;
+        return pts;
+      })
+      .catch(() => []);
+
+    let points;
+    if (lastForecast) {
+      // Warm: answer within the deadline using cache if the fresh fetch is slow.
+      points = await Promise.race([fetchP, gap(2500).then(() => null)]);
+      if (!points || !points.length) points = lastForecast;
+    } else {
+      // Cold (no cache yet): wait for the bounded fetch.
+      points = await fetchP;
+    }
     if (type === 'daily') points = t.toDaily(points);
     const max = opts && opts.maxCount ? opts.maxCount : points.length;
     return points.slice(0, max);
+  }
+
+  // One observation service, resilient — returns [] on failure.
+  async function tryObs(service, params) {
+    try {
+      return await obsItems(service, params);
+    } catch (e) {
+      app.error(`observation source ${service} skipped: ${e.message}`);
+      return [];
+    }
   }
 
   async function getObservations(position, opts) {
@@ -129,14 +179,14 @@ module.exports = function (app) {
     const bbox = [lon - 0.7, lat - 0.7, lon + 0.7, lat + 0.7];
     const now = Date.now();
     const metRange = `${ISO(now - 2 * 3600000)}/${ISO(now)}`;
-    const met = await obsItems('metObs', { bbox, datetime: metRange, limit: 1000 });
-    const metStation = obs.nearestStation(met, lat, lon);
+    const met = await tryObs('metObs', { bbox, datetime: metRange, limit: 1000 });
+    const metStation = obs.nearestParams(met, lat, lon);
     const wd = { date: (metStation && metStation.observed) || ISO(now), type: 'observation', outside: {}, wind: {} };
     if (metStation) Object.assign(wd, obs.outsideFromMetObs(metStation.params));
 
     const oceanRange = `${ISO(now - 3 * 3600000)}/${ISO(now)}`;
-    const ocean = await obsItems('oceanObs', { bbox, datetime: oceanRange, limit: 1000 });
-    const oceanStation = obs.nearestStation(ocean, lat, lon);
+    const ocean = await tryObs('oceanObs', { bbox, datetime: oceanRange, limit: 1000 });
+    const oceanStation = obs.nearestParams(ocean, lat, lon);
     if (oceanStation) {
       const water = obs.waterFromOceanObs(oceanStation.params);
       if (Object.keys(water).length) wd.water = water;
@@ -194,8 +244,8 @@ module.exports = function (app) {
     if (options.observations) {
       try {
         const bbox = [lon - 0.7, lat - 0.7, lon + 0.7, lat + 0.7];
-        const met = await obsItems('metObs', { bbox, datetime: `${ISO(now - 2 * 3600000)}/${ISO(now)}`, limit: 1000 });
-        const st = obs.nearestStation(met, lat, lon);
+        const met = await tryObs('metObs', { bbox, datetime: `${ISO(now - 2 * 3600000)}/${ISO(now)}`, limit: 1000 });
+        const st = obs.nearestParams(met, lat, lon);
         if (st) {
           const { outside, wind } = obs.outsideFromMetObs(st.params);
           if (typeof outside.temperature === 'number') values.push({ path: 'environment.outside.temperature', value: outside.temperature });
@@ -213,8 +263,10 @@ module.exports = function (app) {
     if (options.waves || options.ocean) {
       try {
         const range = { from: ISO(now - 3600000), to: ISO(now + 3 * 3600000) };
-        const wam = options.waves ? await edrPosition(options.wamCollection, lon, lat, t.WAM_PARAMS, range) : [];
-        const dkss = options.ocean ? await edrPosition(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range) : [];
+        let wam = [];
+        let dkss = [];
+        if (options.waves) { wam = await tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range); }
+        if (options.ocean) { await gap(300); dkss = await tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range); }
         const wamRow = rowNearestNow(wam);
         const dkssRow = rowNearestNow(dkss);
         const water = t.waterFromMarine(wamRow, dkssRow);
@@ -231,8 +283,8 @@ module.exports = function (app) {
         let level = water.level;
         if (options.ocean) {
           const bbox = [lon - 0.7, lat - 0.7, lon + 0.7, lat + 0.7];
-          const ocean = await obsItems('oceanObs', { bbox, datetime: `${ISO(now - 3 * 3600000)}/${ISO(now)}`, limit: 1000 });
-          const st = obs.nearestStation(ocean, lat, lon);
+          const ocean = await tryObs('oceanObs', { bbox, datetime: `${ISO(now - 3 * 3600000)}/${ISO(now)}`, limit: 1000 });
+          const st = obs.nearestParams(ocean, lat, lon);
           if (st) {
             const w = obs.waterFromOceanObs(st.params);
             if (typeof w.temperature === 'number') waterTemp = w.temperature;
@@ -247,8 +299,16 @@ module.exports = function (app) {
       } catch (e) { app.error(`marine poll failed: ${e.message}`); }
     }
 
+    // Merge in last-good for any path this poll didn't produce (source 429'd),
+    // and record fresh values as the new last-good.
+    const freshPaths = new Set(values.map((v) => v.path));
+    for (const v of values) lastGood[v.path] = v.value;
+    for (const p of Object.keys(lastGood)) {
+      if (!freshPaths.has(p)) values.push({ path: p, value: lastGood[p] });
+    }
+
     publish(values);
-    app.debug(`DMI poll published ${values.length} values`);
+    app.debug(`DMI poll published ${values.length} values (${freshPaths.size} fresh)`);
   }
 
   // ---- lifecycle ----------------------------------------------------------

@@ -61,7 +61,7 @@ test('buildForecast joins marine to atmospheric by exact time step', () => {
   assert.ok(Math.abs(wd.water.temperature - t.cToK(16)) < 1e-9);
 });
 
-test('nearestStation picks closest station and newest reading per param', () => {
+test('nearestParams picks nearest station per param + newest reading', () => {
   const features = [
     // far station
     { geometry: { coordinates: [8.0, 55.0] }, properties: { stationId: 'far', parameterId: 'temp_dry', value: 10, observed: '2026-07-07T17:00:00Z' } },
@@ -69,9 +69,28 @@ test('nearestStation picks closest station and newest reading per param', () => 
     { geometry: { coordinates: [12.6, 55.7] }, properties: { stationId: 'near', parameterId: 'temp_dry', value: 15, observed: '2026-07-07T17:00:00Z' } },
     { geometry: { coordinates: [12.6, 55.7] }, properties: { stationId: 'near', parameterId: 'temp_dry', value: 16, observed: '2026-07-07T17:50:00Z' } },
   ];
-  const st = obs.nearestStation(features, 55.7, 12.6);
-  assert.strictEqual(st.stationId, 'near');
-  assert.strictEqual(st.params.temp_dry, 16);
+  const r = obs.nearestParams(features, 55.7, 12.6);
+  assert.strictEqual(r.params.temp_dry, 16);
+  assert.strictEqual(r.sources.temp_dry, 'near');
+});
+
+// Regression for the real bug: a precip-only gauge is nearest, but temp/wind come
+// from a full station slightly farther. Per-parameter resolution must still yield temp+wind.
+test('nearestParams resolves each param from nearest station reporting it (specialized stations)', () => {
+  const features = [
+    // very near, but only precipitation
+    { geometry: { coordinates: [11.0, 57.0] }, properties: { stationId: 'rain', parameterId: 'precip_past10min', value: 0, observed: '2026-07-07T18:00:00Z' } },
+    // farther, full synop station with temp + wind
+    { geometry: { coordinates: [11.3, 57.2] }, properties: { stationId: 'synop', parameterId: 'temp_dry', value: 15.7, observed: '2026-07-07T18:00:00Z' } },
+    { geometry: { coordinates: [11.3, 57.2] }, properties: { stationId: 'synop', parameterId: 'wind_speed', value: 8.2, observed: '2026-07-07T18:00:00Z' } },
+  ];
+  const r = obs.nearestParams(features, 57.0, 11.0);
+  assert.strictEqual(r.params.temp_dry, 15.7);   // not dropped just because rain gauge is closer
+  assert.strictEqual(r.params.wind_speed, 8.2);
+  assert.strictEqual(r.sources.temp_dry, 'synop');
+  const { outside, wind } = obs.outsideFromMetObs(r.params);
+  assert.ok(Math.abs(outside.temperature - t.cToK(15.7)) < 1e-9);
+  assert.strictEqual(wind.speedTrue, 8.2);
 });
 
 test('outsideFromMetObs: °C→K, hPa→Pa (prefers pressure_at_sea), gust=wind_max', () => {
