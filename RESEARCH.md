@@ -170,6 +170,66 @@ Radar composites over Denmark and quality-controlled climate observations
 (DK+Greenland). Both lower priority for live boat use.
 <https://www.dmi.dk/frie-data> · <https://www.dmi.dk/friedata/dokumentation/basics>
 
+### 3.7 Warnings — DMI official weather/marine warnings (Vejrvarsler)
+_Researched 2026-07-08 for the Tier-1 enrichment. Live-verified requests below._
+
+**Finding: there is NO warnings collection in the DMI Open Data API.** The key-free
+`opendataapi.dmi.dk` platform serves forecasts (HARMONIE/WAM/DKSS), observations
+(metObs/oceanObs), climate, radar and lightning only — no CAP/alerts endpoint.
+(Confirmed against the live collection lists in §3.1–3.6; the DMI docs index lists
+no warnings API. <https://www.dmi.dk/friedata/dokumentation/basics>.) DMI's public
+warnings page `dmi.dk/vejr/advarsler-varsler/varsler` is a JavaScript SPA with no
+documented/stable open JSON endpoint, and its marine `farvandsudsigter`
+<https://www.dmi.dk/farvandsudsigter> are human-authored free-text bulletins, also
+un-APIfied. So the DMI-native route is a dead end for a machine feed.
+
+**Chosen route: MeteoAlarm (EUMETNET) CAP feed.** DMI is the Danish member of
+EUMETNET/MeteoAlarm and issues its official public warnings through it. MeteoAlarm
+republishes each member's warnings as a **public, key-free, CC BY 4.0** per-country
+**CAP 1.2 Atom feed** — the authoritative machine-readable form of the same DMI
+warnings (this is exactly how `signalk-virtual-weather-sensors` sources Norwegian
+Met.no MetAlerts). **[live-verified 2026-07-08]:**
+
+- **Feed URL:** `https://feeds.meteoalarm.org/feeds/meteoalarm-legacy-atom-<country>`
+  where `<country>` is the lowercase English name, e.g. `…-denmark`. `GET` returns
+  **HTTP 200** anonymously; `Content-Type: application/atom+xml`. The Denmark feed
+  was **empty** (no active warnings — calm summer) at test time; the **germany**
+  feed returned **455 area-entries / 7 grouped warnings** and was used to verify the
+  parser + mapping end-to-end.
+- **Format:** one Atom `<feed>` with one `<entry>` **per (warning × area)**. Each
+  entry carries CAP 1.2 fields in the `cap:` namespace: `cap:event` (e.g.
+  "wind gusts", "coastal event", "gale-force gusts"), `cap:severity`
+  (**Minor/Moderate/Severe/Extreme** = yellow/orange/red), `cap:certainty`,
+  `cap:urgency`, `cap:onset`, `cap:expires`, `cap:sent`, `cap:status` (Actual),
+  `cap:message_type` (Alert/Update/Cancel), `cap:identifier`, `cap:areaDesc`,
+  `cap:geocode` (EMMA_ID region code, e.g. `DK005`), plus `<title>` and a
+  `application/cap+xml` link to the full CAP document.
+- **Auth:** none for the legacy Atom feeds. NB the newer **MeteoAlarm EDR API**
+  (`https://api.meteoalarm.org/edr/v1/collections/warnings`) exists and is GeoJSON,
+  but its `locations` query returned **HTTP 401 Unauthorized** — it is gated to
+  members. So the **legacy Atom feed is the correct public consumption path.**
+- **Area filtering:** the legacy feed has no per-entry polygon geometry (only region
+  names + EMMA_ID codes), so true point-in-polygon isn't possible from it. Denmark
+  is small, so the plugin surfaces **all active warnings for the configured country
+  feed(s)** (`warningCountries`, default `denmark`; accepts a comma list, e.g.
+  `denmark, germany, sweden` for a vessel in mixed waters). Per-area entries of the
+  same warning (same `cap:identifier`) are collapsed into one grouped warning.
+- **Licence/attribution:** CC BY 4.0 with MeteoAlarm redistribution terms; the
+  plugin labels the source **"DMI / MeteoAlarm"**. (Feed `<rights>` verified.)
+- **Marine relevance:** MeteoAlarm carries coastal/wind/flood awareness types — the
+  germany capture showed coastal ("… - Küste") wind-gust warnings, i.e. exactly the
+  gale/coastal events a boat cares about. Dedicated storm-surge levels remain
+  available quantitatively as the DKSS `sea-mean-deviation` **forecast** (§3.1).
+
+**SignalK mapping (implemented Phase-2/Tier-1):**
+- Weather API `getWarnings` → `WeatherWarning[]` `{ startTime(onset), endTime(expires),
+  details(title+areas), source:"DMI / MeteoAlarm", type(cap:event) }` (shape verified
+  against `@signalk/server-api` `weatherapi.ts`).
+- Notifications delta → `notifications.environment.warnings.dmi.<event-hash>` with
+  `state` mapped from severity (Minor→alert, Moderate→warn, Severe→alarm,
+  Extreme→emergency), `method` `['visual']` (+`'sound'` for alarm/emergency), and a
+  human `message`. Lapsed warnings are cleared (value `null`) on the next poll.
+
 ### Coverage / offshore reach (summary)
 - **HARMONIE DINI:** NE Europe (Denmark + surrounding seas + into the Baltic/
   North Sea).

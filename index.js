@@ -11,6 +11,7 @@
 const { edrPosition, obsItems } = require('./lib/dmi');
 const t = require('./lib/transform');
 const obs = require('./lib/observe');
+const warn = require('./lib/warnings');
 
 const ISO = (d) => new Date(d).toISOString();
 
@@ -23,6 +24,9 @@ const META = {
   'environment.outside.wind.speed': 'm/s',
   'environment.outside.wind.gust': 'm/s',
   'environment.outside.wind.direction': 'rad',
+  'environment.outside.horizontalVisibility': 'm',
+  'environment.outside.cloudCover': 'ratio',
+  'environment.outside.precipitationRate': 'm/s',
   'environment.water.temperature': 'K',
   'environment.water.level': 'm',
   'environment.tide.heightNow': 'm',
@@ -45,10 +49,13 @@ module.exports = function (app) {
     'WAM waves and DKSS ocean — into Signal K paths and the v2 Weather API. Data: DMI, CC BY 4.0.';
 
   let timer = null;
+  let warnTimer = null;
   let options = {};
   // Last-good value per path, so a poll where a DMI source 429s re-publishes the
   // previous value (with a fresh timestamp) instead of dropping the path.
   const lastGood = {};
+  // Notification paths currently raised for active warnings, so lapsed ones clear.
+  const activeWarnPaths = new Set();
 
   plugin.schema = {
     type: 'object',
@@ -75,6 +82,22 @@ module.exports = function (app) {
         type: 'boolean', default: true,
         title: 'Publish current conditions as environment.outside.* deltas (nearest metObs station)',
       },
+      tier1: {
+        type: 'boolean', default: true,
+        title: 'Publish extra current conditions (visibility, cloud cover, precipitation rate) as environment.outside.* deltas',
+      },
+      warnings: {
+        type: 'boolean', default: true,
+        title: 'Fetch official DMI warnings (via the MeteoAlarm CAP feed) for the Weather API getWarnings',
+      },
+      warningNotifications: {
+        type: 'boolean', default: true,
+        title: 'Also raise active warnings as Signal K notifications (notifications.environment.warnings.dmi.*)',
+      },
+      warningCountries: {
+        type: 'string', default: 'denmark',
+        title: 'MeteoAlarm country feed(s) for warnings (comma-separated English names, e.g. "denmark, germany, sweden")',
+      },
       waves: {
         type: 'boolean', default: true,
         title: 'Publish WAM waves as environment.water.waves/swell.* deltas',
@@ -93,18 +116,36 @@ module.exports = function (app) {
   };
 
   // ---- position -----------------------------------------------------------
-  function getPosition() {
-    if (options.positionSource === 'fixed') {
-      const { fixedLatitude: lat, fixedLongitude: lon } = options;
-      if (typeof lat === 'number' && typeof lon === 'number') return { latitude: lat, longitude: lon };
-      return null;
-    }
-    const node = app.getSelfPath('navigation.position');
-    const v = node && (node.value || node);
-    if (v && typeof v.latitude === 'number' && typeof v.longitude === 'number') {
-      return { latitude: v.latitude, longitude: v.longitude };
+  const isNum = (n) => typeof n === 'number' && !Number.isNaN(n);
+  const asLatLon = (v) => (v && isNum(v.latitude) && isNum(v.longitude)
+    ? { latitude: v.latitude, longitude: v.longitude } : null);
+
+  // Read the vessel position robustly — different signalk-server versions return
+  // getSelfPath('navigation.position') either as {latitude,longitude} directly or
+  // wrapped as {value:{...}}; '...position.value' returns the bare value. Try all.
+  function vesselPosition() {
+    const attempts = [
+      () => app.getSelfPath('navigation.position.value'),
+      () => app.getSelfPath('navigation.position'),
+    ];
+    for (const get of attempts) {
+      try {
+        const raw = get();
+        const pos = asLatLon(raw) || asLatLon(raw && raw.value);
+        if (pos) return pos;
+      } catch (e) { /* keep trying */ }
     }
     return null;
+  }
+
+  function getPosition() {
+    const fixed = asLatLon({ latitude: options.fixedLatitude, longitude: options.fixedLongitude });
+    if (options.positionSource === 'fixed') return fixed;
+    // vessel: prefer the live GPS, fall back to a configured fixed position if set.
+    const pos = vesselPosition();
+    if (pos) return pos;
+    if (fixed) app.debug('vessel position not in model yet — using fixed fallback');
+    return fixed;
   }
 
   // ---- forecast fetch (shared by provider + delta poll) -------------------
@@ -195,10 +236,60 @@ module.exports = function (app) {
     return [wd].slice(0, max);
   }
 
-  // DMI has no confirmed open-data marine/land warnings endpoint (RESEARCH.md
-  // §3.5). Return empty until one is verified, so consumers stay valid.
+  // ---- warnings (MeteoAlarm CAP feed) -------------------------------------
+  // The DMI Open Data API has no warnings collection; DMI issues its official
+  // public warnings via EUMETNET/MeteoAlarm, whose per-country CAP/Atom feed is
+  // public + key-free + CC BY 4.0 (RESEARCH.md §3.7). Bounded req budget so the
+  // on-demand getWarnings path never hangs.
+  const WARN_REQ = { tries: 2, timeoutMs: 6000 };
+  const WARN_NS = 'notifications.environment.warnings.dmi.';
+  let lastWarnings = null; // grouped-warning cache (last successful fetch)
+
+  async function fetchWarnings() {
+    const groups = await warn.getActiveWarnings(
+      options.warningCountries, Date.now(), WARN_REQ,
+      (c, e) => app.error(`warnings feed ${c} skipped: ${e.message}`)
+    );
+    lastWarnings = groups;
+    return groups;
+  }
+
+  // Signal K Weather API provider method — active warnings for the position.
+  // (MeteoAlarm warnings are region-coded per country, not point queries, so we
+  // surface all active warnings for the configured country feed(s).)
   async function getWarnings() {
-    return [];
+    if (!options.warnings) return [];
+    const groups = await fetchWarnings().catch((e) => {
+      app.error(`getWarnings failed: ${e.message}`);
+      return lastWarnings || [];
+    });
+    return groups.map(warn.toWeatherWarning);
+  }
+
+  // Raise active warnings as Signal K notifications and clear ones that lapsed.
+  async function pollWarnings() {
+    if (!options.warnings) return;
+    try {
+      const groups = await fetchWarnings();
+      const values = [];
+      if (options.warningNotifications) {
+        const seen = new Set();
+        for (const g of groups) {
+          const path = WARN_NS + warn.warningSlug(g);
+          seen.add(path);
+          values.push({ path, value: warn.toNotification(g) });
+        }
+        for (const path of activeWarnPaths) {
+          if (!seen.has(path)) values.push({ path, value: null }); // clear lapsed
+        }
+        activeWarnPaths.clear();
+        for (const p of seen) activeWarnPaths.add(p);
+      }
+      publish(values);
+      app.debug(`DMI warnings: ${groups.length} active`);
+    } catch (e) {
+      app.error(`warnings poll failed: ${e.message}`);
+    }
   }
 
   const provider = {
@@ -260,6 +351,13 @@ module.exports = function (app) {
           if (typeof wind.speedTrue === 'number') values.push({ path: 'environment.outside.wind.speed', value: wind.speedTrue });
           if (typeof wind.gust === 'number') values.push({ path: 'environment.outside.wind.gust', value: wind.gust });
           if (typeof wind.directionTrue === 'number') values.push({ path: 'environment.outside.wind.direction', value: wind.directionTrue });
+          // Tier-1 extras: visibility (m), cloud cover (ratio), precipitation rate (m/s).
+          if (options.tier1) {
+            if (typeof outside.horizontalVisibility === 'number') values.push({ path: 'environment.outside.horizontalVisibility', value: outside.horizontalVisibility });
+            if (typeof outside.cloudCover === 'number') values.push({ path: 'environment.outside.cloudCover', value: outside.cloudCover });
+            // outside.precipitationVolume carries metObs precip_past10min (mm/10min) → SI rate.
+            if (typeof outside.precipitationVolume === 'number') values.push({ path: 'environment.outside.precipitationRate', value: t.mm10ToMps(outside.precipitationVolume) });
+          }
         }
       } catch (e) { app.error(`metObs poll failed: ${e.message}`); }
     }
@@ -321,7 +419,8 @@ module.exports = function (app) {
     options = Object.assign(
       {
         positionSource: 'vessel', pollIntervalMinutes: 30, forecastHours: 48,
-        weatherProvider: true, observations: true, waves: true, ocean: true,
+        weatherProvider: true, observations: true, tier1: true, waves: true, ocean: true,
+        warnings: true, warningNotifications: true, warningCountries: 'denmark',
         harmonieCollection: 'harmonie_dini_sf', wamCollection: 'wam_dw', dkssCollection: 'dkss_nsbs',
       },
       opts || {}
@@ -343,12 +442,20 @@ module.exports = function (app) {
       setTimeout(pollDeltas, 5000);
       timer = setInterval(pollDeltas, period);
     }
+    if (options.warnings) {
+      // Warnings are position-independent (region-coded per country feed) — poll
+      // on their own timer so a missing GPS fix never blocks them.
+      setTimeout(pollWarnings, 6000);
+      warnTimer = setInterval(pollWarnings, period);
+    }
     app.setPluginStatus(`DMI running (poll every ${options.pollIntervalMinutes} min)`);
   };
 
   plugin.stop = function () {
     if (timer) clearInterval(timer);
     timer = null;
+    if (warnTimer) clearInterval(warnTimer);
+    warnTimer = null;
     if (typeof app.unRegisterWeatherProvider === 'function') {
       try { app.unRegisterWeatherProvider(plugin.id); } catch (e) { /* ignore */ }
     }

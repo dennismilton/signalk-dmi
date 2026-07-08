@@ -146,7 +146,96 @@ curl -s "http://localhost:3000/signalk/v1/api/vessels/self/environment/outside/t
    return []); marine deltas keep a **last-good cache** so a busy poll re-publishes
    the previous value instead of dropping the path. Stays under 500 req/5 s.
 
-## Verdict: **PASS** (a, b, c, d all green)
+---
+
+# Phase 3 — Tier-1 enrichment + real warnings (added 2026-07-08)
+
+Same `sk-dmi-test` container (SK 2.30.0, fixed 57 N/11 E, anon read), restarted to
+load the new code. Config for this run added the Tier-1 + warnings toggles and set
+`warningCountries: "denmark, germany"` — the **denmark** feed was empty (calm
+summer, no active DK warnings), so **germany** was included to exercise the full
+live pipeline end-to-end against real active CAP warnings.
+
+Unit tests: `node --test` → **16/16 pass** (added `test/warnings.test.js`: CAP-Atom
+parse, active-filter, per-area grouping, WeatherWarning + notification mapping,
+severity→state, slug determinism, `mm10ToMps`).
+
+### (e) Tier-1 current-condition deltas (metObs) — **PASS**
+```
+curl -s "http://localhost:3000/signalk/v1/api/vessels/self/environment"
+```
+New paths published with correct SI units + meta (all `$source: signalk-dmi`):
+```
+environment.outside.horizontalVisibility = 7309   (m)      # ~7.3 km, sane
+environment.outside.cloudCover            = 0      (ratio)  # 0..1
+environment.outside.precipitationRate     = 0      (m/s)    # from precip_past10min mm/10min
+```
+> Marine now-slice (`water.waves/swell/current`) was absent in THIS capture because
+> DMI `forecastedr` was in a sustained HTTP-429 burst during the run (see caveat);
+> `water.temperature` (289.65 K) + `water.level` (0.01 m) still published from
+> oceanObs. This is the designed graceful degradation, not a regression.
+
+### (f) Real DMI warnings via the Weather API — **PASS**
+```
+curl -s "http://localhost:3000/signalk/v2/api/weather/warnings?lat=57&lon=11"
+```
+HTTP **200**, **7** WeatherWarnings (real, live MeteoAlarm/DMI CAP data):
+```
+by type: { "wind gusts": 6, "gale-force gusts": 1 }
+```
+Example entry (exact Signal K WeatherWarning shape — startTime/endTime/details/source/type):
+```json
+{ "startTime":"2026-07-08T10:00:00+00:00", "endTime":"2026-07-08T22:00:00+00:00",
+  "details":"Yellow Wind Warning issued for Germany - … — Kreis Ostholstein - Küste, Kreis Plön - Küste, …",
+  "source":"DMI / MeteoAlarm", "type":"wind gusts" }
+```
+
+### (g) Warnings as Signal K notifications — **PASS**
+```
+curl -s "http://localhost:3000/signalk/v1/api/vessels/self/notifications/environment/warnings/dmi"
+```
+**7** notification paths under `notifications.environment.warnings.dmi.*`, severity
+mapped to state live:
+```
+by state: { "alert": 6, "warn": 1 }   # 6× Minor(yellow)→alert, 1× Moderate(orange gale-force)→warn
+```
+Example value:
+```json
+{ "state":"alert", "method":["visual"],
+  "message":"DMI Minor wind gusts (Kreis Ostholstein - Küste, …)", "timestamp":"…" }
+```
+Lapsed-warning clearing (value `null` when a warning drops out) is covered by the
+poll logic + unit test; the DK feed returning `[]` cleanly is the empty-case proof.
+
+### Live warnings-feed proof (outside the server, reproducible)
+```
+node -e 'const w=require("./lib/warnings");(async()=>{for(const c of ["denmark","germany"]){\
+ const g=await w.getActiveWarnings(c,Date.now(),{tries:2,timeoutMs:8000});\
+ console.log(c, g.length, "grouped warnings");}})()'
+→ denmark 0 grouped warnings
+→ germany 7 grouped warnings
+```
+
+### Caveat — DMI forecastedr 429 during this run (transient, DMI-side)
+Throughout this test window DMI's `forecastedr` (HARMONIE/WAM/DKSS) returned HTTP
+**429 to everyone** — a **bare** `curl` for a single `temperature-2m` point also got
+429 (`time=0.17s`), so this is a DMI global rate-limit burst, **not** the plugin.
+Consequences + why the Tier-1 forecast-timeline work is still verified:
+- The forecast **point timeline already carries** `outside.cloudCover`,
+  `outside.horizontalVisibility`, `outside.precipitationVolume` and the full
+  `water.*` (waves / swell / `level` = DKSS sea-mean-deviation) block — see the
+  Phase-2.5 forecast capture above (check b) and `buildForecast` unit test
+  (`test 5`). No forecast code changed this phase; the Tier-1 forecast timelines
+  are the **same** provider output the wind timeline already uses.
+- A fresh forecast capture this run returned 0 points (429), and the plugin degraded
+  gracefully (sources → `[]`, no hang; warnings + metObs Tier-1 deltas unaffected).
+- **Re-verify when DMI is not throttling:**
+  `curl -s "http://localhost:3000/signalk/v2/api/weather/forecasts/point?lat=57&lon=11&count=3"`
+  → each point should carry `outside.cloudCover/horizontalVisibility/precipitationVolume`
+  and `water.{waveSignificantHeight,swellHeight,level,…}`.
+
+## Verdict: **PASS** (a–d prior; e, f, g green; forecast-timeline fields verified via
+prior capture + unit test, live re-capture blocked by a transient DMI 429 burst)
 
 ## For the foreman to re-validate (container is UP on :3000)
 ```
