@@ -233,7 +233,12 @@ module.exports = function (app) {
   async function pollDeltas() {
     const pos = getPosition();
     if (!pos) {
-      app.debug('No position yet — skipping DMI poll');
+      // Position may not be in the SignalK model yet right after (re)start.
+      // Retry soon instead of waiting the full poll interval (boot-timing fix):
+      // at boot+5s the vessel GPS often hasn't populated navigation.position, so
+      // a single skip would leave the plugin silent until the next 30-min tick.
+      app.debug('No position yet — retrying DMI poll in 30s');
+      setTimeout(pollDeltas, 30000);
       return;
     }
     const { latitude: lat, longitude: lon } = pos;
