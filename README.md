@@ -10,6 +10,30 @@ It uses DMI's [Open Data API](https://www.dmi.dk/frie-data) (host
 [`RESEARCH.md`](./RESEARCH.md) for the full dataset catalog and provenance (every
 endpoint live-verified).
 
+## Prerequisites
+
+- A **Signal K server** (Node-based). The v2 **Weather API provider** features need
+  a **v2**-capable server; the `environment.*` deltas work on any recent version.
+- **Internet access** to `opendataapi.dmi.dk`. It is **key-free** — **no API key**
+  and no account are required.
+- A **vessel position**: either `navigation.position` (from your GPS) or a
+  configured **fixed latitude/longitude** (dock/shore install).
+- Useful **coverage** is **Danish and North Sea waters** — this is DMI data; outside
+  its model domains the plugin simply publishes nothing.
+- **Node.js 18 or newer**.
+
+No database is required. See **History and trends** below.
+
+## History and trends (optional)
+
+The DMI paths publish **live** into Signal K with **no extra setup** — no database,
+no InfluxDB, nothing else to install. This plugin does **not** require InfluxDB.
+
+If you want **historical data or trend graphs**, install the separate
+[`signalk-to-influxdb2`](https://www.npmjs.com/package/signalk-to-influxdb2) plugin
+and add the `environment.*` paths (above) to its allow-list. That is **entirely
+optional** and is a feature of that plugin, not a requirement of signalk-dmi.
+
 ## What it publishes
 
 The plugin feeds Signal K on **two surfaces**:
