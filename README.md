@@ -26,8 +26,8 @@ Registers `DMI` as a weather provider under `/signalk/v2/api/weather`:
   `RESEARCH.md` §3.7). Also raised as `notifications.environment.warnings.dmi.*`.
 
 ### 2. `environment.*` deltas
-Current conditions + marine, so any consumer (and the maracaibo dashboard's
-`environment.outside.wind.*` checks — a drop-in for the OWM provider) gets live data:
+Current conditions + marine, so any consumer reading `environment.outside.wind.*`
+(a drop-in for the OpenWeather provider) gets live data:
 
 | Path | Source | Unit |
 |---|---|---|
@@ -52,13 +52,34 @@ current is derived from the model's u/v components (set = direction flowing towa
 
 ## Install
 
-Not on npm. Install the **supported way** (registered tarball, so it shows in the
-admin UI and survives `node_modules` rebuilds) — see **[INSTALL.md](INSTALL.md)**
-for the full standard. In short: `npm pack` → copy the `.tgz` into the server
-config dir → `npm install ./signalk-dmi-<version>.tgz` there → restart. Do **not**
-hand-copy files into `node_modules`.
+### From the Signal K Appstore (recommended)
 
-Then enable **DMI (Danish Meteorological Institute) free data** in
+1. Open your Signal K server admin UI → **Appstore → Available**.
+2. Search for **signalk-dmi** (category **Weather**) and click **Install**.
+3. **Restart** the server when prompted.
+
+The Appstore lists this plugin because it is published to npm with the
+`signalk-node-server-plugin` keyword; installs and updates are handled for you
+from the admin UI.
+
+### From npm (manual)
+
+```bash
+npm install signalk-dmi
+```
+run in your Signal K config directory (`~/.signalk`), then restart the server.
+
+### From a local tarball (development / offline)
+
+Install the **registered-tarball** way so it shows in the admin UI and survives
+`node_modules` rebuilds — see **[INSTALL.md](INSTALL.md)** for the full standard.
+In short: `npm pack` → copy the `.tgz` into the server config dir →
+`npm install ./signalk-dmi-<version>.tgz` there → restart. Do **not** hand-copy
+files into `node_modules`.
+
+### Enable
+
+Enable **DMI (Danish Meteorological Institute) free data** in
 _Server → Plugin Config_, and (optionally) select it as the Weather API provider.
 
 ## Configuration
@@ -122,4 +143,17 @@ Warnings are sourced from **[MeteoAlarm](https://meteoalarm.org)** (EUMETNET), w
 republishes DMI's official warnings under CC BY 4.0 with additional redistribution
 terms; the plugin labels the warning source **"DMI / MeteoAlarm"**.
 
-Plugin code: MIT.
+Plugin code: **MIT** — see [LICENSE](LICENSE).
+
+## Disclaimer — informational only, NOT for navigation
+
+This plugin and the data it publishes are provided for **general information
+only** and are **NOT** a substitute for official nautical charts, notices to
+mariners, or an official marine forecast. **Do not rely on it for navigation or
+for safety-of-life decisions.** Weather, wave, ocean, and warning data may be
+delayed, incomplete, wrong, or unavailable, and the plugin may fail silently.
+
+The software is provided **"AS IS", WITHOUT WARRANTY OF ANY KIND**, express or
+implied (see [LICENSE](LICENSE)). Neither the author nor DMI nor MeteoAlarm is
+liable for any loss or damage arising from its use. You are responsible for
+verifying all data against authoritative sources before acting on it.

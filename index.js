@@ -3,8 +3,8 @@
 //   1. Signal K v2 Weather API provider — atmospheric forecasts (HARMONIE) +
 //      observations (metObs), now also carrying marine `water.*` (WAM/DKSS).
 //   2. environment.* deltas — current conditions + marine (waves, sea level,
-//      current, water temp), so non-Weather-API consumers and the maracaibo
-//      dashboard's environment.outside.wind.* checks work as a drop-in for OWM.
+//      current, water temp), so non-Weather-API consumers reading
+//      environment.outside.wind.* work as a drop-in for the OpenWeather provider.
 // DMI Open Data is CC BY 4.0 and key-free on opendataapi.dmi.dk.
 'use strict';
 
