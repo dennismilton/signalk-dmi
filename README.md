@@ -52,35 +52,50 @@ current is derived from the model's u/v components (set = direction flowing towa
 
 ## Install
 
-Not yet on npm. Install from a local checkout on the Signal K server:
+Not on npm. Install the **supported way** (registered tarball, so it shows in the
+admin UI and survives `node_modules` rebuilds) — see **[INSTALL.md](INSTALL.md)**
+for the full standard. In short: `npm pack` → copy the `.tgz` into the server
+config dir → `npm install ./signalk-dmi-<version>.tgz` there → restart. Do **not**
+hand-copy files into `node_modules`.
 
-```bash
-cd ~/.signalk/node_modules
-git clone <repo-url> signalk-dmi
-cd signalk-dmi && npm install
-```
-
-Then restart Signal K, enable **DMI (Danish Meteorological Institute) free data**
-in _Server → Plugin Config_, and (optionally) select it as the Weather API
-provider.
+Then enable **DMI (Danish Meteorological Institute) free data** in
+_Server → Plugin Config_, and (optionally) select it as the Weather API provider.
 
 ## Configuration
 
-| Option | Default | Notes |
-|---|---|---|
-| Position source | `vessel` | `vessel` uses `navigation.position`; `fixed` uses the lat/lon below |
-| Fixed latitude / longitude | — | used when position source = `fixed` |
-| Poll interval (min) | `30` | observations + marine deltas |
-| Forecast look-ahead (h) | `48` | 1–120 |
-| Register weather provider | `true` | atmospheric forecasts + observations via v2 Weather API |
-| Publish outside deltas | `true` | current conditions → `environment.outside.*` |
-| Publish Tier-1 extras | `true` | visibility, cloud cover, precipitation rate → `environment.outside.*` |
-| Publish WAM waves | `true` | → `environment.water.waves/swell.*` |
-| Publish DKSS ocean | `true` | water temp, sea level, current |
-| Fetch warnings | `true` | official DMI warnings via MeteoAlarm → Weather API `getWarnings` |
-| Raise warning notifications | `true` | active warnings → `notifications.environment.warnings.dmi.*` |
-| Warning countries | `denmark` | MeteoAlarm country feed(s), comma-separated (e.g. `denmark, germany, sweden`) |
-| HARMONIE / WAM / DKSS collection | `harmonie_dini_sf` / `wam_dw` / `dkss_nsbs` | swap `wam_nsb`/`wam_natlant` etc. for wider areas |
+Every field has in-UI help text (its `description`). Full reference:
+
+| Field (title) | Key | Type | Default | What it does |
+|---|---|---|---|---|
+| Position source | `positionSource` | enum: Vessel GPS / Fixed | `vessel` | Where DMI is queried. Vessel GPS follows `navigation.position` (use underway); Fixed uses the lat/lon below (dock/shore install). |
+| Fixed latitude | `fixedLatitude` | number (deg) | — | Decimal degrees WGS84, N+. Used **only** when Position source = Fixed. |
+| Fixed longitude | `fixedLongitude` | number (deg) | — | Decimal degrees WGS84, E+. Used **only** when Position source = Fixed. |
+| Poll interval | `pollIntervalMinutes` | number (min, ≥5) | `30` | Refresh cadence for observations + marine deltas. Lower = fresher, more API calls. Does not affect the on-demand forecast. |
+| Forecast window | `forecastHours` | number (h, 1–120) | `48` | Look-ahead horizon of the v2 Weather API forecast. Length only, not refresh rate. |
+| Register as Weather API provider | `weatherProvider` | boolean | `true` | ON = serve `/signalk/v2/api/weather`. Set **OFF** to run additively beside OpenWeather (deltas still publish). |
+| Publish current conditions | `observations` | boolean | `true` | Nearest-station metObs → `environment.outside.*` (temp, pressure, humidity, dew point, wind/gust/dir). |
+| Publish extended conditions | `tier1` | boolean | `true` | Adds `environment.outside.horizontalVisibility`, `cloudCover`, `precipitationRate` (HARMONIE surface). |
+| Fetch weather warnings | `warnings` | boolean | `true` | Official warnings from the EUMETNET/MeteoAlarm CAP feed → Weather API `getWarnings`. |
+| Raise warnings as notifications | `warningNotifications` | boolean | `true` | Active warnings → `notifications.environment.warnings.dmi.*`. No effect unless Fetch warnings is ON. |
+| Warning countries | `warningCountries` | multi-select enum (38 MeteoAlarm countries) | `[denmark]` | Which national MeteoAlarm feeds to pull. Add neighbours when crossing borders. Only used when Fetch warnings is ON. |
+| Publish wave data | `waves` | boolean | `true` | WAM model → `environment.water.waves.*` + `.swell.*` (height, period, direction). |
+| Publish ocean data | `ocean` | boolean | `true` | DKSS model → `environment.water.temperature`, `water.level`, `tide.heightNow`, `current.drift/setTrue`. |
+| HARMONIE forecast model | `harmonieCollection` | enum | `harmonie_dini_sf` | Surface (SF) model for atmospheric data. **DINI** = DK/NL/IE/IS (keep for Danish waters); **IG** = Iceland/Greenland. |
+| WAM wave model | `wamCollection` | enum | `wam_dw` | Wave domain: **Danish Waters** (best near DK), **North Sea & Baltic** (wider), **North Atlantic** (offshore). |
+| DKSS ocean model | `dkssCollection` | enum | `dkss_nsbs` | Ocean domain: **North Sea–Baltic** (widest), **Inner Danish Waters**, **Wadden Sea**, **Limfjord**, **Little Belt**, **Roskilde/Isefjord**. Smallest domain covering your position = best resolution. |
+
+**MeteoAlarm country values** (`warningCountries`, lowercase feed slugs):
+`austria`, `belgium`, `bosnia-herzegovina`, `bulgaria`, `croatia`, `cyprus`,
+`czechia`, `denmark`, `estonia`, `finland`, `france`, `germany`, `greece`,
+`hungary`, `iceland`, `ireland`, `israel`, `italy`, `latvia`, `lithuania`,
+`luxembourg`, `malta`, `moldova`, `montenegro`, `netherlands`, `norway`,
+`poland`, `portugal`, `republic-of-north-macedonia`, `romania`, `serbia`,
+`slovakia`, `slovenia`, `spain`, `sweden`, `switzerland`, `ukraine`,
+`united-kingdom`.
+
+**Collection ids** are DMI Open Data `forecastedr` collection identifiers
+(source of truth: <https://opendataapi.dmi.dk/v1/forecastedr/collections>). Only
+the values in the enums above are valid for this plugin.
 
 ## Coverage
 

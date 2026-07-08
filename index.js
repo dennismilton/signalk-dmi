@@ -62,56 +62,182 @@ module.exports = function (app) {
     properties: {
       positionSource: {
         type: 'string', enum: ['vessel', 'fixed'], default: 'vessel',
-        title: 'Position source (vessel uses navigation.position; fixed uses the lat/lon below)',
+        enumNames: ['Vessel GPS (navigation.position)', 'Fixed coordinates'],
+        title: 'Position source',
+        description:
+          'Where DMI data is queried for. "Vessel GPS" follows the boat live from '
+          + 'navigation.position — use this underway. "Fixed coordinates" always uses '
+          + 'the latitude/longitude below — use it for a dock/shore install or when no '
+          + 'GPS is available. Default: Vessel GPS.',
       },
-      fixedLatitude: { type: 'number', title: 'Fixed latitude (used when position source = fixed)' },
-      fixedLongitude: { type: 'number', title: 'Fixed longitude (used when position source = fixed)' },
+      fixedLatitude: {
+        type: 'number', title: 'Fixed latitude',
+        description:
+          'Latitude in decimal degrees (WGS84), e.g. 56.15. Used ONLY when Position '
+          + 'source = Fixed coordinates; ignored otherwise. North positive.',
+      },
+      fixedLongitude: {
+        type: 'number', title: 'Fixed longitude',
+        description:
+          'Longitude in decimal degrees (WGS84), e.g. 10.22. Used ONLY when Position '
+          + 'source = Fixed coordinates; ignored otherwise. East positive.',
+      },
       pollIntervalMinutes: {
         type: 'number', default: 30, minimum: 5,
-        title: 'Poll interval for observations + marine deltas (minutes)',
+        title: 'Poll interval (minutes)',
+        description:
+          'How often DMI observations and marine (waves/ocean) deltas are refreshed, '
+          + 'in minutes (minimum 5). Lower = fresher data but more API calls; DMI is '
+          + 'free but shared-rate-limited, so 30 is a good boat default. Does not affect '
+          + 'the on-demand Weather API forecast. Default: 30.',
       },
       forecastHours: {
         type: 'number', default: 48, minimum: 1, maximum: 120,
-        title: 'Forecast look-ahead window (hours)',
+        title: 'Forecast window (hours)',
+        description:
+          'Look-ahead horizon for the v2 Weather API forecast, in hours (1–120). Only '
+          + 'changes how far ahead forecast steps are returned; it does not change the '
+          + 'refresh rate or the environment.* deltas. Default: 48.',
       },
       weatherProvider: {
         type: 'boolean', default: true,
-        title: 'Register DMI as a Signal K v2 Weather API provider (forecasts + observations)',
+        title: 'Register as Weather API provider',
+        description:
+          'When ON, DMI serves the Signal K v2 Weather API (/signalk/v2/api/weather '
+          + 'forecasts + observations). Turn OFF to run additively ALONGSIDE another '
+          + 'provider (e.g. OpenWeather) without competing to be the default provider — '
+          + 'the environment.* deltas below still publish either way. Default: ON '
+          + '(set OFF on the boat where OpenWeather stays the default).',
       },
       observations: {
         type: 'boolean', default: true,
-        title: 'Publish current conditions as environment.outside.* deltas (nearest metObs station)',
+        title: 'Publish current conditions',
+        description:
+          'Publish nearest-station DMI met observations as environment.outside.* deltas '
+          + '(temperature, pressure, humidity, dew point, wind speed/gust/direction). '
+          + 'These are the OpenWeather-parity paths the dashboard reads. Turn OFF to stop '
+          + 'publishing them. Default: ON.',
       },
       tier1: {
         type: 'boolean', default: true,
-        title: 'Publish extra current conditions (visibility, cloud cover, precipitation rate) as environment.outside.* deltas',
+        title: 'Publish extended conditions',
+        description:
+          'Add three more current-condition deltas from the HARMONIE surface model: '
+          + 'environment.outside.horizontalVisibility (m), cloudCover (ratio 0–1) and '
+          + 'precipitationRate (m/s). Turn OFF for a leaner path set. Default: ON.',
       },
       warnings: {
         type: 'boolean', default: true,
-        title: 'Fetch official DMI warnings (via the MeteoAlarm CAP feed) for the Weather API getWarnings',
+        title: 'Fetch weather warnings',
+        description:
+          'Fetch official government weather/marine warnings from the EUMETNET MeteoAlarm '
+          + 'CAP feed for the countries selected below, and expose them via the Weather '
+          + 'API getWarnings. Turn OFF to skip warnings entirely. Default: ON.',
       },
       warningNotifications: {
         type: 'boolean', default: true,
-        title: 'Also raise active warnings as Signal K notifications (notifications.environment.warnings.dmi.*)',
+        title: 'Raise warnings as notifications',
+        description:
+          'Also surface each active warning as a Signal K notification under '
+          + 'notifications.environment.warnings.dmi.* so alarms/displays can react. '
+          + 'Has no effect unless "Fetch weather warnings" is ON. Default: ON.',
       },
       warningCountries: {
-        type: 'string', default: 'denmark',
-        title: 'MeteoAlarm country feed(s) for warnings (comma-separated English names, e.g. "denmark, germany, sweden")',
+        type: 'array', default: ['denmark'],
+        title: 'Warning countries',
+        description:
+          'Which MeteoAlarm national feeds to pull warnings from. Denmark covers Danish '
+          + 'waters; add neighbours (Germany, Sweden, Norway, Netherlands, Poland) when '
+          + 'sailing across borders. Only used when "Fetch weather warnings" is ON. '
+          + 'Default: Denmark.',
+        items: {
+          type: 'string',
+          enum: [
+            'austria', 'belgium', 'bosnia-herzegovina', 'bulgaria', 'croatia', 'cyprus',
+            'czechia', 'denmark', 'estonia', 'finland', 'france', 'germany', 'greece',
+            'hungary', 'iceland', 'ireland', 'israel', 'italy', 'latvia', 'lithuania',
+            'luxembourg', 'malta', 'moldova', 'montenegro', 'netherlands', 'norway',
+            'poland', 'portugal', 'republic-of-north-macedonia', 'romania', 'serbia',
+            'slovakia', 'slovenia', 'spain', 'sweden', 'switzerland', 'ukraine',
+            'united-kingdom',
+          ],
+          enumNames: [
+            'Austria', 'Belgium', 'Bosnia and Herzegovina', 'Bulgaria', 'Croatia', 'Cyprus',
+            'Czechia', 'Denmark', 'Estonia', 'Finland', 'France', 'Germany', 'Greece',
+            'Hungary', 'Iceland', 'Ireland', 'Israel', 'Italy', 'Latvia', 'Lithuania',
+            'Luxembourg', 'Malta', 'Moldova', 'Montenegro', 'Netherlands', 'Norway',
+            'Poland', 'Portugal', 'North Macedonia', 'Romania', 'Serbia',
+            'Slovakia', 'Slovenia', 'Spain', 'Sweden', 'Switzerland', 'Ukraine',
+            'United Kingdom',
+          ],
+        },
+        uniqueItems: true,
       },
       waves: {
         type: 'boolean', default: true,
-        title: 'Publish WAM waves as environment.water.waves/swell.* deltas',
+        title: 'Publish wave data',
+        description:
+          'Publish WAM wave-model data as environment.water.waves.* and .swell.* deltas '
+          + '(significant height, mean period, mean direction). Uses the WAM model chosen '
+          + 'below. Turn OFF to skip waves. Default: ON.',
       },
       ocean: {
         type: 'boolean', default: true,
-        title: 'Publish DKSS ocean (water temp, sea level, current) as environment.* deltas',
+        title: 'Publish ocean data',
+        description:
+          'Publish DKSS ocean-model data as environment.water.temperature, water.level, '
+          + 'tide.heightNow and current.drift/setTrue deltas. Uses the DKSS model chosen '
+          + 'below. Turn OFF to skip ocean/current. Default: ON.',
       },
-      harmonieCollection: { type: 'string', default: 'harmonie_dini_sf', title: 'HARMONIE forecast collection' },
+      harmonieCollection: {
+        type: 'string', default: 'harmonie_dini_sf',
+        enum: ['harmonie_dini_sf', 'harmonie_ig_sf'],
+        enumNames: [
+          'DINI — Denmark / Netherlands / Ireland / Iceland (recommended)',
+          'IG — Iceland / Greenland',
+        ],
+        title: 'HARMONIE forecast model',
+        description:
+          'DMI HARMONIE high-resolution surface (SF) model used for the atmospheric '
+          + 'forecast and observations. DINI covers Danish/North-Sea waters — keep this '
+          + 'unless your position is outside the DINI domain (e.g. around Iceland/'
+          + 'Greenland, where IG applies). Only surface models are offered; pressure-level '
+          + 'and ensemble collections carry different parameters and are not compatible. '
+          + 'Default: DINI.',
+      },
       wamCollection: {
         type: 'string', default: 'wam_dw',
-        title: 'WAM wave collection (wam_dw Danish waters · wam_nsb North Sea/Baltic · wam_natlant N. Atlantic)',
+        enum: ['wam_dw', 'wam_nsb', 'wam_natlant'],
+        enumNames: [
+          'Danish Waters (highest resolution near DK, recommended)',
+          'North Sea & Baltic (wider coverage)',
+          'North Atlantic (offshore/ocean)',
+        ],
+        title: 'WAM wave model',
+        description:
+          'DMI WAM wave-model domain used for the wave/swell deltas. Pick the smallest '
+          + 'domain that contains your position for best resolution: Danish Waters for '
+          + 'coastal DK, North Sea & Baltic for wider passages, North Atlantic for '
+          + 'offshore. Default: Danish Waters.',
       },
-      dkssCollection: { type: 'string', default: 'dkss_nsbs', title: 'DKSS ocean collection' },
+      dkssCollection: {
+        type: 'string', default: 'dkss_nsbs',
+        enum: ['dkss_nsbs', 'dkss_idw', 'dkss_ws', 'dkss_lf', 'dkss_lb', 'dkss_if'],
+        enumNames: [
+          'North Sea – Baltic Sea (widest, recommended)',
+          'Inner Danish Waters (higher resolution around DK)',
+          'Wadden Sea',
+          'Limfjord',
+          'Little Belt',
+          'Roskilde / Isefjord',
+        ],
+        title: 'DKSS ocean model',
+        description:
+          'DMI DKSS storm-surge/ocean-model domain used for water level, water '
+          + 'temperature, tide and current deltas. Choose the smallest domain that '
+          + 'contains your position for best resolution; North Sea – Baltic Sea is the '
+          + 'broad default that covers most of Danish waters. Default: North Sea – Baltic.',
+      },
     },
   };
 
@@ -420,7 +546,7 @@ module.exports = function (app) {
       {
         positionSource: 'vessel', pollIntervalMinutes: 30, forecastHours: 48,
         weatherProvider: true, observations: true, tier1: true, waves: true, ocean: true,
-        warnings: true, warningNotifications: true, warningCountries: 'denmark',
+        warnings: true, warningNotifications: true, warningCountries: ['denmark'],
         harmonieCollection: 'harmonie_dini_sf', wamCollection: 'wam_dw', dkssCollection: 'dkss_nsbs',
       },
       opts || {}

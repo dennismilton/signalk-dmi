@@ -99,6 +99,29 @@ curl -sk "https://192.168.8.9:3443/signalk/v1/api/vessels/self/environment" | gr
 In the admin UI: **https://192.168.8.9:3443** → Server → Plugin Config →
 **DMI Open Data** appears, enabled, configurable.
 
+## Configuring the plugin
+
+Once installed, configure it in **Server → Plugin Config → DMI (Danish
+Meteorological Institute) free data**. Every field carries in-UI help text (its
+JSON-schema `description`) explaining purpose, units, effect and when to change
+it — there are **no undocumented free-text fields**. The three DMI model
+collections and the warning-country list are **fixed-value pickers** (enums), so
+you cannot enter an invalid id.
+
+Full field-by-field reference table (title · key · type · default · effect) lives
+in the plugin **[README.md](README.md#configuration)**. Boat defaults for the
+additive install alongside OpenWeather:
+
+- `weatherProvider: false` — DMI publishes `environment.*` deltas but does **not**
+  take over the v2 Weather API provider (OpenWeather stays default).
+- Everything else at its schema default (poll 30 min, forecast 48 h, all
+  publish-toggles ON, `warningCountries: [denmark]`, `harmonie_dini_sf` / `wam_dw`
+  / `dkss_nsbs` collections).
+
+This config is stored (and preserved across reinstall) in
+`plugin-config-data/signalk-dmi.json` in the server config dir — it is **not**
+part of the tarball, so upgrading the code never resets your settings.
+
 ## Fleet note
 
 All maracaibo custom plugins follow this. Published community plugins
