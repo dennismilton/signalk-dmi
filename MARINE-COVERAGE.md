@@ -99,3 +99,16 @@ the interval for this.
    time-series of all-`null` values counts as empty and triggers the surrounding-area ring —
    this is what will finally surface waves/swell (~9 nm open-Kattegat cell) with the honest
    "nearby ~X nm" marker.
+
+## Resolution — action 2 landed (v0.3.1, 2026-07-09)
+
+`lib/dmi.js` now has `hasNumericValues(rows, params)` and `edrPositionNearby` decides
+"the exact point has data" and "a probe hit" by **numeric presence**, not `rows.length`.
+A null-masked cell (full-length all-null series) is therefore treated as EMPTY, so the
+ring fires and the first nearby wet WAM cell (~3–9 nm out, within the 15 nm cap) is used
+with its `…nearbyDistance`/`…nearbyBearing` honest marker. A DKSS cell with a real number
+in ANY requested param (e.g. `water-temperature` present while `current-u/v` are null) still
+counts as present — so working ocean temp/level/tide are not ringed away. Covered by
+`test/dmi.test.js` (null-masked-exact→ring, null-masked-everywhere→honest empty, DKSS
+mixed-cell no-regression). Action 1 (the `dkss_idw` config switch) is still worth applying
+for a non-null current vector at the exact boat cell — it is independent of this code fix.

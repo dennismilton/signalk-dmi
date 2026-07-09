@@ -85,11 +85,21 @@ though the water a mile away is fully modelled. To avoid empty wave/swell/curren
 fields in that common case, the **fetch layer** samples the surrounding area:
 
 1. query the exact point first (preferred whenever it has data);
-2. if a WAM or DKSS collection returns **zero rows** at the point, probe an expanding
-   ring of nearby offset points — from ~0.05° outward to a ~0.25° / ~15 nm cap,
-   nearest ring first — and use the **first non-empty grid point's data as-is**
+2. if a WAM or DKSS collection has **no usable numeric data** at the point, probe an
+   expanding ring of nearby offset points — from ~0.05° outward to a ~0.25° / ~15 nm
+   cap, nearest ring first — and use the **first grid point with numeric data as-is**
    (no interpolation, no fabrication);
 3. only report empty when the whole nearby area has no data.
+
+> **Null-masked cells (why this keys on numeric presence, not row count).** A masked
+> DMI grid cell — land, out of the wet domain, or otherwise no-data — does **not**
+> return an empty response; it returns a **full-length time series whose parameter
+> values are all `null`** (common at coastal/inner-bay points). "Has data" is therefore
+> judged by the presence of a numeric value for a requested parameter, never by the
+> row count, or a null-masked cell would be mistaken for a valid reading and the ring
+> would never fire. A cell with a real number in **any** requested parameter (e.g. DKSS
+> `water-temperature` present while `current-u/v` are null) counts as present, so working
+> ocean temp/level/tide are never ringed away.
 
 When a value comes from an offset point, the plugin publishes a small honest-display
 marker — `…nearbyDistance` (m) and `…nearbyBearing` (rad) — so a display can label the

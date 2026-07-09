@@ -138,15 +138,21 @@ DKSS (ocean); refreshed hourly / 3-hourly / 6-hourly by model.
 
 **Grid-gap behaviour at the boat's exact point (implemented fetch-layer fallback).**
 A `position?coords=POINT(lon lat)` query resolves to the single grid cell containing
-that point. For the marine models this cell is *frequently empty* at a real boat
-position — a coastal/land cell, an interior grid hole, or a spot just outside the
-domain — so the query returns **zero features** even though neighbouring water cells
-are fully modelled. The plugin therefore samples the **surrounding area**: try the
-exact point; if a WAM or DKSS collection is empty, probe an expanding ring of nearby
-offset `POINT`s (step ~0.05°, cap ~0.25° / ~15 nm, nearest ring first) and use the
-first non-empty grid point's data verbatim — no interpolation. The offset actually
-used is surfaced as `…nearbyDistance`/`…nearbyBearing` markers for honest display.
-See `lib/dmi.js` `edrPositionNearby` and the unit tests in `test/dmi.test.js`.
+that point. For the marine models this cell is *frequently unusable* at a real boat
+position — a coastal/land cell, an interior grid hole, a spot just outside the domain,
+or a **null-masked** cell. **Important [live-verified 2026-07-09]:** a masked cell does
+**not** return zero features — it returns a **full-length time series whose parameter
+values are all `null`** (observed for `wam_dw` and `dkss_nsbs` at inner Aarhus Bay,
+56.169 N 10.223 E, while open-Kattegat cells ~9 nm away returned real wave/swell). So
+emptiness must be judged by the **presence of a numeric value**, not the row count.
+The plugin samples the **surrounding area**: try the exact point; if a WAM or DKSS
+collection has no numeric data, probe an expanding ring of nearby offset `POINT`s (step
+~0.05°, cap ~0.25° / ~15 nm, nearest ring first) and use the first grid point with
+numeric data verbatim — no interpolation. A cell with a real number in *any* requested
+parameter counts as present (so working DKSS temp/level are not ringed away). The offset
+actually used is surfaced as `…nearbyDistance`/`…nearbyBearing` markers for honest
+display. See `lib/dmi.js` `hasNumericValues` + `edrPositionNearby`, the coverage
+write-up in `MARINE-COVERAGE.md`, and the unit tests in `test/dmi.test.js`.
 Ground distance from the ring radius: 1° latitude ≈ 111.32 km, so 0.05° ≈ 3.0 nm and
 the 0.25° cap ≈ 15 nm; longitude offsets are widened by 1/cos(lat) to keep the ring
 roughly circular on the ground.

@@ -54,17 +54,17 @@ the container** so it matches the server's node/arch.
 ```bash
 # 1. Build a versioned tarball from the repo (on the dev machine)
 cd /Volumes/development/source/my-projects/signalk-dmi
-npm pack                                   # -> signalk-dmi-0.3.0.tgz
+npm pack                                   # -> signalk-dmi-0.3.1.tgz
 
 # 2. Copy it into the server config dir (= /home/node/.signalk in the container)
-scp signalk-dmi-0.3.0.tgz pi@192.168.8.9:/home/pi/docker/signalk/
+scp signalk-dmi-0.3.1.tgz pi@192.168.8.9:/home/pi/docker/signalk/
 
 # 3. Remove any prior hand-dropped sideload (clean slate)
 ssh pi@192.168.8.9 'docker exec signalk-server rm -rf /home/node/.signalk/node_modules/signalk-dmi'
 
-# 4. Install the tarball => adds "signalk-dmi": "file:signalk-dmi-0.3.0.tgz" to
+# 4. Install the tarball => adds "signalk-dmi": "file:signalk-dmi-0.3.1.tgz" to
 #    ~/.signalk/package.json AND unpacks it into node_modules (registered + discovered)
-ssh pi@192.168.8.9 'docker exec -w /home/node/.signalk signalk-server npm install ./signalk-dmi-0.3.0.tgz --no-audit --no-fund'
+ssh pi@192.168.8.9 'docker exec -w /home/node/.signalk signalk-server npm install ./signalk-dmi-0.3.1.tgz --no-audit --no-fund'
 
 # 5. Restart so the server re-scans and loads the freshly installed code
 ssh pi@192.168.8.9 'docker restart signalk-server'
@@ -87,7 +87,7 @@ entry or bump the version, since `file:` deps are cached by version.)
 ```bash
 # registered in the tracked manifest
 ssh pi@192.168.8.9 'grep signalk-dmi /home/pi/docker/signalk/package.json'
-# => "signalk-dmi": "file:signalk-dmi-0.3.0.tgz"
+# => "signalk-dmi": "file:signalk-dmi-0.3.1.tgz"
 
 # discovered + loaded (admin API needs auth; keyword presence confirms discovery)
 ssh pi@192.168.8.9 'grep -l signalk-node-server-plugin /home/pi/docker/signalk/node_modules/signalk-dmi/package.json'
