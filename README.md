@@ -70,9 +70,33 @@ Current conditions + marine, so any consumer reading `environment.outside.wind.*
 | `environment.water.waves.significantHeight` / `.period` / `.direction` | WAM | m / s / rad |
 | `environment.water.swell.height` / `.period` / `.direction` | WAM | m / s / rad |
 | `environment.current.drift` / `environment.current.setTrue` | DKSS | m/s / rad |
+| `environment.water.waves.nearbyDistance` / `.nearbyBearing` | WAM (surrounding-area marker) | m / rad |
+| `environment.current.nearbyDistance` / `environment.current.nearbyBearing` | DKSS (surrounding-area marker) | m / rad |
 
 All values are converted to Signal K SI units (K, Pa, m/s, rad, ratio); ocean
 current is derived from the model's u/v components (set = direction flowing toward).
+
+### Marine surrounding-area sourcing (grid gaps)
+
+DMI's marine models (WAM waves/swell, DKSS ocean/current) are gridded, and the
+boat's **exact** position is frequently a gap — a coastal or land cell, an interior
+hole, or a spot just outside the model domain — so a point query returns nothing even
+though the water a mile away is fully modelled. To avoid empty wave/swell/current
+fields in that common case, the **fetch layer** samples the surrounding area:
+
+1. query the exact point first (preferred whenever it has data);
+2. if a WAM or DKSS collection returns **zero rows** at the point, probe an expanding
+   ring of nearby offset points — from ~0.05° outward to a ~0.25° / ~15 nm cap,
+   nearest ring first — and use the **first non-empty grid point's data as-is**
+   (no interpolation, no fabrication);
+3. only report empty when the whole nearby area has no data.
+
+When a value comes from an offset point, the plugin publishes a small honest-display
+marker — `…nearbyDistance` (m) and `…nearbyBearing` (rad) — so a display can label the
+reading "nearby ~X nm" rather than presenting it as measured at the boat. The marker is
+cleared (null) as soon as the exact point returns data again. This is a fetch-layer
+resilience feature only: the requested parameters, the SI mapping, and the marine value
+paths are unchanged.
 
 ## Install
 

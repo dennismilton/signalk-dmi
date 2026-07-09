@@ -8,7 +8,7 @@
 // DMI Open Data is CC BY 4.0 and key-free on opendataapi.dmi.dk.
 'use strict';
 
-const { edrPosition, obsItems } = require('./lib/dmi');
+const { edrPosition, edrPositionNearby, obsItems } = require('./lib/dmi');
 const t = require('./lib/transform');
 const obs = require('./lib/observe');
 const warn = require('./lib/warnings');
@@ -38,7 +38,22 @@ const META = {
   'environment.water.swell.direction': 'rad',
   'environment.current.drift': 'm/s',
   'environment.current.setTrue': 'rad',
+  // Honest-display markers: when a marine value was sourced from a nearby grid
+  // point (surrounding-area fallback, not the boat's exact position), these carry
+  // how far off (m) and in which direction (rad) the sample was taken, so the
+  // display can label it "nearby ~X nm". Null/absent means the value is at-point.
+  'environment.water.waves.nearbyDistance': 'm',
+  'environment.water.waves.nearbyBearing': 'rad',
+  'environment.current.nearbyDistance': 'm',
+  'environment.current.nearbyBearing': 'rad',
 };
+
+// Marine surrounding-area marker paths — EXCLUDED from the last-good re-publish
+// mechanism so a stale "nearby" tag can never survive a later exact-point poll.
+const NEARBY_PATHS = new Set([
+  'environment.water.waves.nearbyDistance', 'environment.water.waves.nearbyBearing',
+  'environment.current.nearbyDistance', 'environment.current.nearbyBearing',
+]);
 
 module.exports = function (app) {
   const plugin = {};
@@ -279,8 +294,18 @@ module.exports = function (app) {
 
   // One EDR collection, resilient: on failure (429, land/out-of-grid, timeout)
   // log and return [] so a single source never sinks the whole forecast.
-  async function tryEdr(collection, lon, lat, params, range, req) {
+  // When opts.nearby is set (marine collections), the exact point is tried first
+  // and, if it is empty, the surrounding area is sampled (see edrPositionNearby);
+  // the returned rows array carries a `.nearby` marker ({ distanceM, bearingRad }
+  // or null) so the caller can surface a "nearby ~X nm" indicator.
+  async function tryEdr(collection, lon, lat, params, range, req, opts = {}) {
     try {
+      if (opts.nearby) {
+        const { rows, offset } = await edrPositionNearby(collection, lon, lat, params, range, req);
+        rows.nearby = offset;
+        if (offset) app.debug(`marine ${collection}: no data at point — using nearby grid ~${(offset.distanceM / 1852).toFixed(1)} nm off`);
+        return rows;
+      }
       return await edrPosition(collection, lon, lat, params, range, req);
     } catch (e) {
       app.error(`forecast source ${collection} skipped: ${e.message}`);
@@ -294,10 +319,12 @@ module.exports = function (app) {
   const FORECAST_REQ = { tries: 2, timeoutMs: 6000 };
   async function fetchForecast(pos, range) {
     const { latitude: lat, longitude: lon } = pos;
+    // Marine collections (WAM/DKSS) use the surrounding-area fallback so the
+    // forecast track still populates when the boat's exact point is a grid gap.
     const [harmonie, wam, dkss] = await Promise.all([
       tryEdr(options.harmonieCollection, lon, lat, t.HARMONIE_PARAMS, range, FORECAST_REQ),
-      options.waves ? tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range, FORECAST_REQ) : Promise.resolve([]),
-      options.ocean ? tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range, FORECAST_REQ) : Promise.resolve([]),
+      options.waves ? tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range, FORECAST_REQ, { nearby: true }) : Promise.resolve([]),
+      options.ocean ? tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range, FORECAST_REQ, { nearby: true }) : Promise.resolve([]),
     ]);
     return { harmonie, wam, dkss };
   }
@@ -492,10 +519,13 @@ module.exports = function (app) {
     if (options.waves || options.ocean) {
       try {
         const range = { from: ISO(now - 3600000), to: ISO(now + 3 * 3600000) };
+        // Bounded budget for the exact-point call so the poll never stalls; the
+        // surrounding-area probes ring out with their own fast, no-retry budget.
+        const MARINE_REQ = { tries: 2, timeoutMs: 8000 };
         let wam = [];
         let dkss = [];
-        if (options.waves) { wam = await tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range); }
-        if (options.ocean) { await gap(300); dkss = await tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range); }
+        if (options.waves) { wam = await tryEdr(options.wamCollection, lon, lat, t.WAM_PARAMS, range, MARINE_REQ, { nearby: true }); }
+        if (options.ocean) { await gap(300); dkss = await tryEdr(options.dkssCollection, lon, lat, t.DKSS_PARAMS, range, MARINE_REQ, { nearby: true }); }
         const wamRow = rowNearestNow(wam);
         const dkssRow = rowNearestNow(dkss);
         const water = t.waterFromMarine(wamRow, dkssRow);
@@ -507,6 +537,18 @@ module.exports = function (app) {
         if (typeof water.swellDirection === 'number') values.push({ path: 'environment.water.swell.direction', value: water.swellDirection });
         if (typeof water.surfaceCurrentSpeed === 'number') values.push({ path: 'environment.current.drift', value: water.surfaceCurrentSpeed });
         if (typeof water.surfaceCurrentDirection === 'number') values.push({ path: 'environment.current.setTrue', value: water.surfaceCurrentDirection });
+        // Honest-display markers: tag waves/swell (WAM) and current (DKSS) with the
+        // offset when the data came from a nearby grid point; publish null to CLEAR
+        // the tag once the exact point returns data again. Only emitted when the
+        // source produced rows at all (empty area → no marker, card shows "—").
+        if (wam.length) {
+          values.push({ path: 'environment.water.waves.nearbyDistance', value: wam.nearby ? wam.nearby.distanceM : null });
+          values.push({ path: 'environment.water.waves.nearbyBearing', value: wam.nearby ? wam.nearby.bearingRad : null });
+        }
+        if (dkss.length) {
+          values.push({ path: 'environment.current.nearbyDistance', value: dkss.nearby ? dkss.nearby.distanceM : null });
+          values.push({ path: 'environment.current.nearbyBearing', value: dkss.nearby ? dkss.nearby.bearingRad : null });
+        }
         // Water temperature + sea level: prefer observed oceanObs, fall back to DKSS forecast.
         let waterTemp = water.temperature;
         let level = water.level;
@@ -531,7 +573,9 @@ module.exports = function (app) {
     // Merge in last-good for any path this poll didn't produce (source 429'd),
     // and record fresh values as the new last-good.
     const freshPaths = new Set(values.map((v) => v.path));
-    for (const v of values) lastGood[v.path] = v.value;
+    // Record last-good for stable value paths only — never the nearby markers, so a
+    // stale "nearby ~X nm" tag can't be re-published over a later exact-point poll.
+    for (const v of values) if (!NEARBY_PATHS.has(v.path)) lastGood[v.path] = v.value;
     for (const p of Object.keys(lastGood)) {
       if (!freshPaths.has(p)) values.push({ path: p, value: lastGood[p] });
     }

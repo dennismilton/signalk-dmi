@@ -136,6 +136,21 @@ Model coverage summary (AWS registry, DMI operational):
 <https://registry.opendata.aws/dmi-opendata/> — HARMONIE (weather), WAM (waves),
 DKSS (ocean); refreshed hourly / 3-hourly / 6-hourly by model.
 
+**Grid-gap behaviour at the boat's exact point (implemented fetch-layer fallback).**
+A `position?coords=POINT(lon lat)` query resolves to the single grid cell containing
+that point. For the marine models this cell is *frequently empty* at a real boat
+position — a coastal/land cell, an interior grid hole, or a spot just outside the
+domain — so the query returns **zero features** even though neighbouring water cells
+are fully modelled. The plugin therefore samples the **surrounding area**: try the
+exact point; if a WAM or DKSS collection is empty, probe an expanding ring of nearby
+offset `POINT`s (step ~0.05°, cap ~0.25° / ~15 nm, nearest ring first) and use the
+first non-empty grid point's data verbatim — no interpolation. The offset actually
+used is surfaced as `…nearbyDistance`/`…nearbyBearing` markers for honest display.
+See `lib/dmi.js` `edrPositionNearby` and the unit tests in `test/dmi.test.js`.
+Ground distance from the ring radius: 1° latitude ≈ 111.32 km, so 0.05° ≈ 3.0 nm and
+the 0.25° cap ≈ 15 nm; longitude offsets are widened by 1/cos(lat) to keep the ring
+roughly circular on the ground.
+
 ### 3.2 Observations — Meteorological (metObs) `https://opendataapi.dmi.dk/v2/metObs`
 Collections `observation`, `station`. Items are GeoJSON.
 - **[live-verified]** `GET /v2/metObs/collections/observation/items?limit=1`

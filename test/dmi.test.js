@@ -1,0 +1,118 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert');
+const dmi = require('../lib/dmi');
+
+// --- fetch stub -------------------------------------------------------------
+// edrPositionNearby drives real HTTP via global.fetch; stub it so we can control
+// which POINT queries return rows and count how many were probed. Each stub
+// returns DMI-shaped GeoJSON (one Feature per forecast step, step time in props).
+function geojson(features) {
+  return { ok: true, status: 200, statusText: 'OK', json: async () => ({ features }) };
+}
+function feature(step, props) { return { properties: { step, ...props } }; }
+function pointOf(url) {
+  const coords = new URL(url).searchParams.get('coords'); // 'POINT(lon lat)'
+  const m = /POINT\(([-\d.]+) ([-\d.]+)\)/.exec(coords);
+  return { lon: parseFloat(m[1]), lat: parseFloat(m[2]) };
+}
+
+// Install a stub for the duration of `fn`, always restoring the real fetch.
+async function withFetch(stub, fn) {
+  const real = global.fetch;
+  global.fetch = stub;
+  try { return await fn(); } finally { global.fetch = real; }
+}
+
+const BOAT = { lon: 10, lat: 56 };
+const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+
+test('edrPositionNearby: exact point has data → used as-is, no offset', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    const p = pointOf(url); calls.push(p);
+    return geojson([feature('2026-07-09T12:00:00Z', { 'significant-wave-height': 1.1 })]);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    assert.strictEqual(r.offset, null);            // exact point → no nearby tag
+    assert.strictEqual(r.rows.length, 1);
+    assert.strictEqual(r.rows[0]['significant-wave-height'], 1.1);
+    assert.strictEqual(calls.length, 1);           // only the exact query fired
+  });
+});
+
+test('edrPositionNearby: empty at point → samples surrounding area, nearest non-empty used', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    const p = pointOf(url); calls.push(p);
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    // Exact point is a grid gap (empty); any offset point has a real grid value.
+    const features = isExact ? [] : [feature('2026-07-09T12:00:00Z', { 'significant-wave-height': 1.4 })];
+    return geojson(features);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    // The first ring/first bearing (0.05° due North) is the nearest probe → used.
+    assert.ok(r.offset, 'expected a nearby offset marker');
+    assert.strictEqual(r.rows.length, 1);
+    assert.strictEqual(r.rows[0]['significant-wave-height'], 1.4);   // real grid value, not fabricated
+    // 0.05° ≈ 5566 m ≈ 3.0 nm; bearing 0 rad = due North.
+    assert.ok(near(r.offset.distanceM, 0.05 * 111320, 1), `distance ~5566 m, got ${r.offset.distanceM}`);
+    assert.ok(near(r.offset.bearingRad, 0, 1e-6), `bearing ~0, got ${r.offset.bearingRad}`);
+    assert.ok(r.offset.distanceM <= 0.25 * 111320 + 1, 'within the ~15 nm cap');
+    assert.strictEqual(calls.length, 2);           // exact (empty) + first probe (hit)
+  });
+});
+
+test('edrPositionNearby: nearest hit is the second probe when the first offset is also empty', async () => {
+  await withFetch(async (url) => {
+    const p = pointOf(url);
+    // Empty at the exact point AND at the 0.05°-North probe; the 0.05°-NE (45°)
+    // probe is the first with data → that offset is the one reported.
+    const isNorth = near(p.lon, BOAT.lon) && p.lat > BOAT.lat + 0.049 && p.lat < BOAT.lat + 0.051;
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    const features = (isExact || isNorth) ? [] : [feature('2026-07-09T12:00:00Z', { 'water-temperature': 15 })];
+    return geojson(features);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('dkss_nsbs', BOAT.lon, BOAT.lat,
+      ['water-temperature'], null, { tries: 1 }, { gapMs: 0 });
+    assert.ok(r.offset);
+    assert.strictEqual(r.rows[0]['water-temperature'], 15);
+    // 45° bearing → π/4 rad, still ~0.05° (~3 nm) out.
+    assert.ok(near(r.offset.bearingRad, Math.PI / 4, 1e-6), `bearing ~π/4, got ${r.offset.bearingRad}`);
+    assert.ok(near(r.offset.distanceM, 0.05 * 111320, 1));
+  });
+});
+
+test('edrPositionNearby: whole surrounding area empty → no rows, no offset (honest empty)', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    calls.push(pointOf(url));
+    return geojson([]);   // nothing anywhere in the domain
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0, maxDeg: 0.1 });
+    assert.strictEqual(r.rows.length, 0);
+    assert.strictEqual(r.offset, null);
+    // exact + 2 rings × 8 bearings = 17 probes at maxDeg 0.1 / step 0.05.
+    assert.strictEqual(calls.length, 1 + 2 * 8);
+  });
+});
+
+test('edrPositionNearby: an out-of-domain 4xx on a probe is treated as empty (keeps probing)', async () => {
+  await withFetch(async (url) => {
+    const p = pointOf(url);
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    if (isExact) return geojson([]);                       // gap at point
+    // First probe throws (out of domain); a later probe succeeds.
+    const isNorth = near(p.lon, BOAT.lon) && p.lat > BOAT.lat + 0.049 && p.lat < BOAT.lat + 0.051;
+    if (isNorth) return { ok: false, status: 400, statusText: 'Bad Request', json: async () => ({}) };
+    return geojson([feature('2026-07-09T12:00:00Z', { 'significant-wave-height': 2.0 })]);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    assert.ok(r.offset);
+    assert.strictEqual(r.rows[0]['significant-wave-height'], 2.0);
+  });
+});
