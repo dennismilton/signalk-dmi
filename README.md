@@ -10,19 +10,28 @@ It uses DMI's [Open Data API](https://www.dmi.dk/frie-data) (host
 [`RESEARCH.md`](./RESEARCH.md) for the full dataset catalog and provenance (every
 endpoint live-verified).
 
-## Prerequisites
+## Requirements
 
-- A **Signal K server** (Node-based). The v2 **Weather API provider** features need
-  a **v2**-capable server; the `environment.*` deltas work on any recent version.
-- **Internet access** to `opendataapi.dmi.dk`. It is **key-free** — **no API key**
-  and no account are required.
-- A **vessel position**: either `navigation.position` (from your GPS) or a
-  configured **fixed latitude/longitude** (dock/shore install).
-- Useful **coverage** is **Danish and North Sea waters** — this is DMI data; outside
-  its model domains the plugin simply publishes nothing.
-- **Node.js 18 or newer**.
+- **Signal K server** — the Node.js `signalk-server`. The `environment.*` deltas
+  work on any recent version; the v2 **Weather API provider** feature needs a
+  **v2-capable** server (Signal K server ≥ 2.x).
+- **Node.js 18 or newer** (whatever your Signal K server runs on).
+- **Platforms** — anything that runs Signal K server: Linux (incl. Raspberry Pi
+  ARM), macOS, Windows, and Docker. No native/compiled dependencies (this plugin
+  has **zero runtime dependencies**), so no build tools are needed.
+- **Outbound internet** to `https://opendataapi.dmi.dk`.
+- **No DMI API key, no account, no registration.** DMI's Open Data API is free and
+  key-free ([DMI Open Data — Authentication](https://opendatadocs.dmi.govcloud.dk/en/Authentication)).
+- A **vessel position** — either live `navigation.position` (GPS) or a configured
+  **fixed latitude/longitude** (dock/shore install or testing).
+- **Coverage** — Danish, North Sea and Baltic waters (DMI's model domains).
+  Outside those areas the plugin simply publishes nothing.
 
-No database is required. See **History and trends** below.
+**No database is required** (see *History and trends* below). **Data licence:**
+DMI data is **CC BY 4.0** (attribution required — see [Attribution / licence](#attribution--licence)).
+**Not for navigation** — informational only (see the [Disclaimer](#disclaimer--informational-only-not-for-navigation)).
+
+Install steps for a fresh server are in **[INSTALL.md](INSTALL.md)**.
 
 ## History and trends (optional)
 

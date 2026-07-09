@@ -9,6 +9,13 @@ automatically. It is written so anyone with the npm publish rights can follow it
 > depend on the package). Run the dry-run first (step 4) and only publish when the
 > file list is clean.
 
+> **Maintainer-only steps.** Everything that publishes or claims a public
+> identity — `npm login` / npm 2FA, `npm publish --access public`, creating the
+> public GitHub repository, and any Signal K Appstore/registry submission — is the
+> **package maintainer's (Dennis's) call** and must be run by the maintainer with
+> their own npm/GitHub credentials. The build, dry-run and verification steps are
+> safe for anyone to run; the actual publish is not automated and not delegated.
+
 ---
 
 ## How the Appstore listing works (mechanism)
@@ -63,7 +70,8 @@ automatically. It is written so anyone with the npm publish rights can follow it
 ### 1. Land your changes and pick the version
 
 Follow **semver**: patch for fixes, minor for backward-compatible features, major
-for breaking changes. The current published intent is **0.2.0**.
+for breaking changes. The current repo version is **0.3.2** (not yet published —
+the first `npm publish` will be the initial public release).
 
 Bump the version with npm (this rewrites `package.json`, makes a commit, and tags):
 ```bash
