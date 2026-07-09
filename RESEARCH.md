@@ -146,13 +146,27 @@ values are all `null`** (observed for `wam_dw` and `dkss_nsbs` at inner Aarhus B
 56.169 N 10.223 E, while open-Kattegat cells ~9 nm away returned real wave/swell). So
 emptiness must be judged by the **presence of a numeric value**, not the row count.
 The plugin samples the **surrounding area**: try the exact point; if a WAM or DKSS
-collection has no numeric data, probe an expanding ring of nearby offset `POINT`s (step
-~0.05°, cap ~0.25° / ~15 nm, nearest ring first) and use the first grid point with
-numeric data verbatim — no interpolation. A cell with a real number in *any* requested
-parameter counts as present (so working DKSS temp/level are not ringed away). The offset
-actually used is surfaced as `…nearbyDistance`/`…nearbyBearing` markers for honest
-display. See `lib/dmi.js` `hasNumericValues` + `edrPositionNearby`, the coverage
-write-up in `MARINE-COVERAGE.md`, and the unit tests in `test/dmi.test.js`.
+collection has no numeric data, probe a small **capped** set of nearby offset `POINT`s
+and use the first grid point with numeric data verbatim — no interpolation. A cell with
+a real number in *any* requested parameter counts as present (so working DKSS temp/level
+are not ringed away). The offset used is surfaced as `…nearbyDistance`/`…nearbyBearing`
+markers for honest display.
+
+**DMI 429-awareness [live-verified 2026-07-09].** DMI HTTP-**429 rate-limits** the marine
+EDR, so the probe is engineered not to amplify it:
+
+- the probe set is **capped at ≤ 8 points** — 2 rings (cardinals at ~0.05° / ~3 nm,
+  diagonals at ~0.10° / ~6 nm), nearest-first, **spaced** by a short delay, with **early
+  exit** on the first numeric hit (was an uncapped ~40-point sweep that made the 429 worse);
+- a **429 is treated as backoff, not as an empty cell** — it aborts probing for that poll
+  (never triggers further probes) and the plugin relies on the next poll;
+- an empty/429 probe opens a per-collection **cooldown** (~2 poll cycles) during which only
+  the single exact point is queried (no ring); a numeric hit clears it, else it expires and
+  the area is re-probed. Cooldown state lives in `index.js`; the pure gate is
+  `marineCooldownActive` / `noteMarineProbeResult` in `lib/dmi.js`.
+
+See `lib/dmi.js` `hasNumericValues` + `edrPositionNearby` (+ the cooldown helpers), the
+coverage write-up in `MARINE-COVERAGE.md`, and the unit tests in `test/dmi.test.js`.
 Ground distance from the ring radius: 1° latitude ≈ 111.32 km, so 0.05° ≈ 3.0 nm and
 the 0.25° cap ≈ 15 nm; longitude offsets are widened by 1/cos(lat) to keep the ring
 roughly circular on the ground.

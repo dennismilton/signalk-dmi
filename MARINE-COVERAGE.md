@@ -112,3 +112,28 @@ counts as present — so working ocean temp/level/tide are not ringed away. Cove
 `test/dmi.test.js` (null-masked-exact→ring, null-masked-everywhere→honest empty, DKSS
 mixed-cell no-regression). Action 1 (the `dkss_idw` config switch) is still worth applying
 for a non-null current vector at the exact boat cell — it is independent of this code fix.
+
+## Follow-up — the null-row fix vs DMI's 429 rate-limit (v0.3.2, 2026-07-09)
+
+**Live finding:** DMI HTTP-**429 rate-limits** the marine EDR. The v0.3.1 null-row fix, by
+making masked cells correctly count as empty, caused the surrounding-area ring to fire **up
+to ~40 nearby position calls per masked poll** — which amplified the 429 and was partly
+self-defeating: each 429 was caught as `[]` and treated as an empty cell, fuelling more
+probing. Fixed so the probe stops hammering DMI while keeping the null-row correctness:
+
+1. **Capped probe set** — `RING_CANDIDATES` is **≤ 8 points** (2 rings: cardinals at
+   ~0.05° / ~3 nm, diagonals at ~0.10° / ~6 nm), the smallest set that still reaches a wet
+   cell a few nm out, nearest-first, replacing the ~40-point sweep.
+2. **Spaced + early-exit** — a short delay between successive DMI calls (so one poll never
+   bursts) and probing stops the instant a nearby point returns numeric data.
+3. **429 = backoff, not data** — `getWith` tags errors with `.status`; `edrPositionNearby`
+   aborts probing on a 429 (`rateLimited`) instead of counting it as an empty cell, and
+   never immediately retries within the same poll.
+4. **Empty/429 cooldown** — a probe that finds nothing (empty or 429) opens a per-collection
+   cooldown (~2 poll cycles) during which only the single exact point is queried; a numeric
+   hit clears it, else it expires and the area is re-probed. State in `index.js`; pure gate
+   `marineCooldownActive` / `noteMarineProbeResult` in `lib/dmi.js`.
+
+Exact-point-preferred → nearest-nonempty-nearby behaviour and the honest `…nearby*` marker
+are unchanged; `WAM_PARAMS`/`DKSS_PARAMS`/`waterFromMarine`/emitted paths untouched. Tests
+extended (capped count, early-exit, 429-aborts-probing, cooldown window). `node --test` 29/29.

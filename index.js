@@ -8,7 +8,9 @@
 // DMI Open Data is CC BY 4.0 and key-free on opendataapi.dmi.dk.
 'use strict';
 
-const { edrPosition, edrPositionNearby, obsItems } = require('./lib/dmi');
+const {
+  edrPosition, edrPositionNearby, marineCooldownActive, noteMarineProbeResult, obsItems,
+} = require('./lib/dmi');
 const t = require('./lib/transform');
 const obs = require('./lib/observe');
 const warn = require('./lib/warnings');
@@ -69,6 +71,11 @@ module.exports = function (app) {
   // Last-good value per path, so a poll where a DMI source 429s re-publishes the
   // previous value (with a fresh timestamp) instead of dropping the path.
   const lastGood = {};
+  // Per-collection ring-probe cooldown (expiry epoch ms). Set when a marine collection's
+  // capped surrounding-area probe comes back empty or 429-rate-limited, so the plugin
+  // doesn't re-run the whole ring every poll and re-trigger the DMI 429. Cleared on any
+  // numeric hit; expires after ~2 poll cycles so the area is re-probed later.
+  const marineProbeCooldown = {};
   // Notification paths currently raised for active warnings, so lapsed ones clear.
   const activeWarnPaths = new Set();
 
@@ -301,9 +308,21 @@ module.exports = function (app) {
   async function tryEdr(collection, lon, lat, params, range, req, opts = {}) {
     try {
       if (opts.nearby) {
-        const { rows, offset } = await edrPositionNearby(collection, lon, lat, params, range, req);
-        rows.nearby = offset;
-        if (offset) app.debug(`marine ${collection}: no data at point — using nearby grid ~${(offset.distanceM / 1852).toFixed(1)} nm off`);
+        const now = Date.now();
+        // While cooling down, skip the ring entirely — just try the cheap exact point.
+        const cooling = marineCooldownActive(marineProbeCooldown, collection, now);
+        const res = await edrPositionNearby(collection, lon, lat, params, range, req, { probe: !cooling });
+        const period = Math.max(5, options.pollIntervalMinutes || 30) * 60000;
+        const cooled = noteMarineProbeResult(marineProbeCooldown, collection, now, res, 2 * period);
+        if (cooled) {
+          app.debug(`marine ${collection}: no nearby data (${res.rateLimited ? 'DMI 429 — backing off' : 'area empty'}) — ring probe cooldown ~${Math.round((2 * period) / 60000)} min`);
+        } else if (res.offset) {
+          app.debug(`marine ${collection}: no data at point — using nearby grid ~${(res.offset.distanceM / 1852).toFixed(1)} nm off`);
+        } else if (cooling) {
+          app.debug(`marine ${collection}: ring probe cooling down — exact-point only this poll`);
+        }
+        const rows = res.rows;
+        rows.nearby = res.offset;
         return rows;
       }
       return await edrPosition(collection, lon, lat, params, range, req);

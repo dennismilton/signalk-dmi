@@ -85,11 +85,23 @@ though the water a mile away is fully modelled. To avoid empty wave/swell/curren
 fields in that common case, the **fetch layer** samples the surrounding area:
 
 1. query the exact point first (preferred whenever it has data);
-2. if a WAM or DKSS collection has **no usable numeric data** at the point, probe an
-   expanding ring of nearby offset points — from ~0.05° outward to a ~0.25° / ~15 nm
-   cap, nearest ring first — and use the **first grid point with numeric data as-is**
-   (no interpolation, no fabrication);
-3. only report empty when the whole nearby area has no data.
+2. if a WAM or DKSS collection has **no usable numeric data** at the point, probe a small
+   **capped** set of nearby offset points (2 rings, **≤ 8 points** — the cardinals at
+   ~0.05° / ~3 nm and the diagonals at ~0.10° / ~6 nm, all within the ~15 nm reach),
+   nearest first, **spaced** by a short delay, and use the **first grid point with numeric
+   data as-is** (no interpolation, no fabrication) — stopping immediately on that hit;
+3. only report empty when the whole capped area has no data.
+
+The probe is deliberately gentle on DMI, which HTTP-**429 rate-limits** the marine EDR:
+
+- **A 429 is backoff, not data.** If any call returns 429, the plugin stops probing for
+  that poll and relies on the next one — a 429 is never mistaken for an empty cell that
+  would fuel more probing (the failure mode that made an earlier build amplify the 429).
+- **Cooldown.** When a collection's capped probe comes back with nothing — genuinely empty
+  or 429-aborted — the plugin remembers that for ~2 poll cycles and, meanwhile, only tries
+  the single exact point (no ring), so it does not re-run the whole probe every 30-minute
+  poll and re-trigger the limit. A numeric hit clears the cooldown at once; otherwise it
+  expires and the area is probed again. Last-good values keep publishing across the window.
 
 > **Null-masked cells (why this keys on numeric presence, not row count).** A masked
 > DMI grid cell — land, out of the wet domain, or otherwise no-data — does **not**

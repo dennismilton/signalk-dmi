@@ -78,8 +78,8 @@ test('edrPositionNearby: empty at point → samples surrounding area, nearest no
 test('edrPositionNearby: nearest hit is the second probe when the first offset is also empty', async () => {
   await withFetch(async (url) => {
     const p = pointOf(url);
-    // Empty at the exact point AND at the 0.05°-North probe; the 0.05°-NE (45°)
-    // probe is the first with data → that offset is the one reported.
+    // Empty at the exact point AND at the 0.05°-North probe (candidate 1); the
+    // 0.05°-East probe (candidate 2, cardinal ring) is the first with data.
     const isNorth = near(p.lon, BOAT.lon) && p.lat > BOAT.lat + 0.049 && p.lat < BOAT.lat + 0.051;
     const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
     const features = (isExact || isNorth) ? [] : [feature('2026-07-09T12:00:00Z', { 'water-temperature': 15 })];
@@ -89,24 +89,28 @@ test('edrPositionNearby: nearest hit is the second probe when the first offset i
       ['water-temperature'], null, { tries: 1 }, { gapMs: 0 });
     assert.ok(r.offset);
     assert.strictEqual(r.rows[0]['water-temperature'], 15);
-    // 45° bearing → π/4 rad, still ~0.05° (~3 nm) out.
-    assert.ok(near(r.offset.bearingRad, Math.PI / 4, 1e-6), `bearing ~π/4, got ${r.offset.bearingRad}`);
+    // Candidate 2 = 0.05° due East → bearing π/2, still ~0.05° (~3 nm) out.
+    assert.ok(near(r.offset.bearingRad, Math.PI / 2, 1e-6), `bearing ~π/2, got ${r.offset.bearingRad}`);
     assert.ok(near(r.offset.distanceM, 0.05 * 111320, 1));
   });
 });
 
-test('edrPositionNearby: whole surrounding area empty → no rows, no offset (honest empty)', async () => {
+test('edrPositionNearby: probe set is CAPPED — whole area empty rings at most 8 points (not ~40)', async () => {
   const calls = [];
   await withFetch(async (url) => {
     calls.push(pointOf(url));
     return geojson([]);   // nothing anywhere in the domain
   }, async () => {
     const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
-      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0, maxDeg: 0.1 });
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
     assert.strictEqual(r.rows.length, 0);
     assert.strictEqual(r.offset, null);
-    // exact + 2 rings × 8 bearings = 17 probes at maxDeg 0.1 / step 0.05.
-    assert.strictEqual(calls.length, 1 + 2 * 8);
+    assert.strictEqual(r.found, false);
+    assert.strictEqual(r.probed, true);
+    assert.strictEqual(r.rateLimited, false);
+    // exact + 8 capped ring candidates = 9 DMI calls total (was 1 + 40).
+    assert.strictEqual(calls.length, 1 + 8);
+    assert.ok(calls.length <= 9, `capped, got ${calls.length}`);
   });
 });
 
@@ -151,14 +155,110 @@ test('edrPositionNearby: null-masked exact cell (full-length all-null series) co
   });
 });
 
-test('edrPositionNearby: null-masked everywhere → no rows, no offset (honest empty)', async () => {
+test('edrPositionNearby: null-masked everywhere → no rows, no offset (honest empty, probed)', async () => {
   await withFetch(async (url) => geojson(maskedSeries('significant-wave-height', 6)),
     async () => {
       const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
-        ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0, maxDeg: 0.05 });
+        ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
       assert.strictEqual(r.rows.length, 0);
       assert.strictEqual(r.offset, null);
+      assert.strictEqual(r.found, false);
+      assert.strictEqual(r.probed, true);
     });
+});
+
+test('edrPositionNearby: early-exit on first numeric hit — no further probes fire', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    const p = pointOf(url); calls.push(p);
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    // Masked exact; EVERY offset has data — so the first probe must win and stop.
+    return geojson(isExact ? maskedSeries('significant-wave-height', 6)
+      : [feature('2026-07-09T12:00:00Z', { 'significant-wave-height': 0.7 })]);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    assert.strictEqual(r.found, true);
+    assert.strictEqual(r.probed, true);
+    assert.strictEqual(r.rows[0]['significant-wave-height'], 0.7);
+    assert.strictEqual(calls.length, 2);   // exact + exactly ONE probe, then early exit
+  });
+});
+
+test('edrPositionNearby: a 429 on a probe is BACKOFF, not data — aborts probing immediately', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    const p = pointOf(url); calls.push(p);
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    if (isExact) return geojson(maskedSeries('significant-wave-height', 6));   // masked → would ring
+    return { ok: false, status: 429, statusText: 'Too Many Requests', json: async () => ({}) };
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    assert.strictEqual(r.rateLimited, true);
+    assert.strictEqual(r.found, false);
+    assert.strictEqual(r.probed, true);
+    assert.strictEqual(r.offset, null);
+    // exact + ONE probe (429) → abort; the other 7 candidates must NOT fire.
+    assert.strictEqual(calls.length, 2);
+  });
+});
+
+test('edrPositionNearby: a 429 on the exact point backs off without probing', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    calls.push(pointOf(url));
+    return { ok: false, status: 429, statusText: 'Too Many Requests', json: async () => ({}) };
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0 });
+    assert.strictEqual(r.rateLimited, true);
+    assert.strictEqual(r.probed, false);   // never entered the ring
+    assert.strictEqual(calls.length, 1);   // just the exact call
+  });
+});
+
+test('edrPositionNearby: probe:false (cooldown) does exact-only, never rings', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    calls.push(pointOf(url));
+    return geojson(maskedSeries('significant-wave-height', 6));   // masked → would normally ring
+  }, async () => {
+    const r = await dmi.edrPositionNearby('wam_dw', BOAT.lon, BOAT.lat,
+      ['significant-wave-height'], null, { tries: 1 }, { gapMs: 0, probe: false });
+    assert.strictEqual(r.found, false);
+    assert.strictEqual(r.probed, false);
+    assert.strictEqual(r.offset, null);
+    assert.strictEqual(calls.length, 1);   // exact only — ring suppressed
+  });
+});
+
+test('marine cooldown: empty/429 probe sets a window that suppresses re-probing until it expires', () => {
+  const map = {};
+  const t0 = 1000000;
+  const WINDOW = 60 * 60000;   // ~2 poll cycles at 30 min
+
+  // A probed-empty result opens the cooldown.
+  const set = dmi.noteMarineProbeResult(map, 'wam_dw', t0, { found: false, rateLimited: false, probed: true }, WINDOW);
+  assert.strictEqual(set, true);
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0), true);
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0 + 30 * 60000), true);   // within window → still cooling
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0 + WINDOW + 1), false);  // expired → probe again
+
+  // A 429 result also opens the cooldown.
+  const map2 = {};
+  dmi.noteMarineProbeResult(map2, 'dkss_nsbs', t0, { found: false, rateLimited: true, probed: true }, WINDOW);
+  assert.strictEqual(dmi.marineCooldownActive(map2, 'dkss_nsbs', t0 + 5000), true);
+
+  // A numeric hit clears any existing cooldown immediately.
+  dmi.noteMarineProbeResult(map, 'wam_dw', t0 + 10, { found: true, rateLimited: false, probed: true }, WINDOW);
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0 + 20), false);
+
+  // An exact-only, non-probed empty (during cooldown) neither sets nor extends it.
+  const map3 = {};
+  const set3 = dmi.noteMarineProbeResult(map3, 'wam_dw', t0, { found: false, rateLimited: false, probed: false }, WINDOW);
+  assert.strictEqual(set3, false);
+  assert.strictEqual(dmi.marineCooldownActive(map3, 'wam_dw', t0), false);
 });
 
 test('edrPositionNearby: DKSS mixed cell (real temp, null current) still counts as PRESENT (no regression)', async () => {
