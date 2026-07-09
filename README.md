@@ -38,10 +38,28 @@ Install steps for a fresh server are in **[INSTALL.md](INSTALL.md)**.
 The DMI paths publish **live** into Signal K with **no extra setup** — no database,
 no InfluxDB, nothing else to install. This plugin does **not** require InfluxDB.
 
-If you want **historical data or trend graphs**, install the separate
-[`signalk-to-influxdb2`](https://www.npmjs.com/package/signalk-to-influxdb2) plugin
-and add the `environment.*` paths (above) to its allow-list. That is **entirely
-optional** and is a feature of that plugin, not a requirement of signalk-dmi.
+If you want **historical data or trend graphs** (sparklines, forecast-vs-actual),
+install the separate
+[`signalk-to-influxdb2`](https://www.npmjs.com/package/signalk-to-influxdb2) plugin,
+point it at an InfluxDB 2.x bucket, and **allow-list the DMI paths** in its
+`filteringRules` (keep the deny-all `.*` last):
+
+```json
+"filteringRules": [
+  { "allow": true,  "path": "environment\\.outside\\." },
+  { "allow": true,  "path": "environment\\.water\\." },
+  { "allow": true,  "path": "environment\\.tide\\." },
+  { "allow": true,  "path": "environment\\.current\\." },
+  { "allow": true,  "path": "environment\\.forecast\\." },
+  { "allow": false, "path": ".*" }
+]
+```
+
+Then verify with the Signal K v2 **History API**
+(`/signalk/v2/api/history/values?paths=environment.water.temperature&from=…&to=…`).
+Full step-by-step in **[INSTALL.md → history & trends](INSTALL.md#optional--history--trends-influxdb)**.
+This is **entirely optional** and a feature of that plugin, not a requirement of
+signalk-dmi.
 
 ## What it publishes
 

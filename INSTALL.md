@@ -184,6 +184,50 @@ the install is working. Marine wave/current fields can be intermittent (DMI
 rate-limits its marine models); atmospheric, water temperature, level and tide
 come through reliably.
 
+## Optional — history & trends (InfluxDB)
+
+signalk-dmi publishes **live** data only; it stores nothing itself, and it needs
+**no database to run**. If you want **history or trend graphs** (e.g. sparklines,
+forecast-vs-actual over time), persist the DMI paths with the separate
+[`signalk-to-influxdb2`](https://www.npmjs.com/package/signalk-to-influxdb2)
+plugin. This is entirely optional and independent of signalk-dmi.
+
+1. Install **signalk-to-influxdb2** from the Appstore and point it at an
+   **InfluxDB 2.x** bucket (URL, org, token, bucket — see that plugin's own docs).
+2. In its plugin config, set the **`filteringRules`** allow-list so the DMI paths
+   are persisted. Add these allow rules (regex `path`), keeping the deny-all
+   **last**. **Only add** — if you already have allow rules, keep them; just append
+   these:
+
+   ```json
+   "filteringRules": [
+     { "allow": true,  "path": "environment\\.outside\\." },
+     { "allow": true,  "path": "environment\\.water\\." },
+     { "allow": true,  "path": "environment\\.tide\\." },
+     { "allow": true,  "path": "environment\\.current\\." },
+     { "allow": true,  "path": "environment\\.forecast\\." },
+     { "allow": false, "path": ".*" }
+   ]
+   ```
+
+   `environment\.outside\.` covers temperature, pressure, humidity, wind **and**
+   the extended `horizontalVisibility` / `cloudCover` / `precipitationRate` paths;
+   `environment\.water\.` covers water temperature/level and waves/swell;
+   `environment\.tide\.`, `environment\.current\.` and `environment\.forecast\.`
+   cover the rest of the DMI output. (These prefixes also match any same-prefix
+   non-DMI paths you publish — harmless for an allow-list.)
+
+3. **Restart** the server. After some data accumulates, confirm history flows via
+   the Signal K **v2 History API** (replace host/port; add a login/token or enable
+   read-only access if security is on):
+
+   ```bash
+   curl -s "http://localhost:3000/signalk/v2/api/history/values?paths=environment.water.temperature&from=2026-01-01T00:00:00Z&to=2026-12-31T00:00:00Z&resolution=1800"
+   ```
+
+   A working setup returns `data` rows of `[timestamp, value]`. (Use a `from`/`to`
+   window that spans when the plugin has been running.)
+
 ## Troubleshooting
 
 - **Not in the plugin list** → the files aren't in the config-dir `node_modules`,
