@@ -6,9 +6,7 @@ into Signal K, richer than the generic OpenWeather provider for Danish, Baltic a
 North Sea waters.
 
 It uses DMI's [Open Data API](https://www.dmi.dk/frie-data) (host
-`opendataapi.dmi.dk`, **no API key required**, licensed CC BY 4.0). See
-[`RESEARCH.md`](./RESEARCH.md) for the full dataset catalog and provenance (every
-endpoint live-verified).
+`opendataapi.dmi.dk`, **no API key required**, licensed CC BY 4.0).
 
 ## Requirements
 
@@ -75,8 +73,8 @@ Registers `DMI` as a weather provider under `/signalk/v2/api/weather`:
 - **Observations** (`/observations`) from the nearest metObs land/coastal station,
   plus nearest oceanObs sea level / water temperature.
 - **Warnings** (`/warnings`) — official DMI weather/marine warnings sourced from the
-  EUMETNET/MeteoAlarm CAP feed (the DMI Open Data API has no warnings collection; see
-  `RESEARCH.md` §3.7). Also raised as `notifications.environment.warnings.dmi.*`.
+  EUMETNET/MeteoAlarm CAP feed (the DMI Open Data API has no warnings collection).
+  Also raised as `notifications.environment.warnings.dmi.*`.
 
 ### 2. `environment.*` deltas
 Current conditions + marine, so any consumer reading `environment.outside.wind.*`

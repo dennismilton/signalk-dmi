@@ -42,8 +42,8 @@ it. All three install routes below simply get the plugin's files into that
 2. Search **signalk-dmi** (category **Weather**) → **Install**.
 3. **Restart** the server when prompted.
 
-The Appstore installs and tracks the plugin for you. (Available only after the
-package is published to npm — see PUBLISH.md.)
+The Appstore installs and tracks the plugin for you. (Available once the package
+is published to npm.)
 
 ## Route B — npm
 
