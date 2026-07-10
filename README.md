@@ -8,6 +8,16 @@ North Sea waters.
 It uses DMI's [Open Data API](https://www.dmi.dk/frie-data) (host
 `opendataapi.dmi.dk`, **no API key required**, licensed CC BY 4.0).
 
+## Screenshots
+
+Plugin configuration — with in-UI InfluxDB history guidance:
+
+![signalk-dmi plugin configuration](media/plugin-config.png)
+
+Live DMI data flowing into Signal K `environment.*` paths:
+
+![signalk-dmi live data in the Signal K Data Browser](media/data-browser.png)
+
 ## Requirements
 
 - **Signal K server** — the Node.js `signalk-server`. The `environment.*` deltas
