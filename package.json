@@ -33,8 +33,7 @@
     "lib/",
     "README.md",
     "LICENSE",
-    "INSTALL.md",
-    "PUBLISH.md"
+    "INSTALL.md"
   ],
   "engines": {
     "node": ">=18"
