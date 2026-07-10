@@ -50,12 +50,14 @@ point it at an InfluxDB 2.x bucket, and **allow-list the DMI paths** in its
   { "allow": true,  "path": "environment\\.water\\." },
   { "allow": true,  "path": "environment\\.tide\\." },
   { "allow": true,  "path": "environment\\.current\\." },
-  { "allow": true,  "path": "environment\\.forecast\\." },
   { "allow": false, "path": ".*" }
 ]
 ```
 
-Then verify with the Signal K v2 **History API**
+These are exactly the `environment.*` groups signalk-dmi publishes; the plugin
+shows this same list (and detects whether it's already applied) in its own config
+UI — see *History & trends* status there. Then verify with the Signal K v2
+**History API**
 (`/signalk/v2/api/history/values?paths=environment.water.temperature&from=…&to=…`).
 Full step-by-step in **[INSTALL.md → history & trends](INSTALL.md#optional--history--trends-influxdb)**.
 This is **entirely optional** and a feature of that plugin, not a requirement of

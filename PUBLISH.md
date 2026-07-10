@@ -70,7 +70,7 @@ automatically. It is written so anyone with the npm publish rights can follow it
 ### 1. Land your changes and pick the version
 
 Follow **semver**: patch for fixes, minor for backward-compatible features, major
-for breaking changes. The current repo version is **0.3.2** (not yet published —
+for breaking changes. The current repo version is **0.4.0** (not yet published —
 the first `npm publish` will be the initial public release).
 
 Bump the version with npm (this rewrites `package.json`, makes a commit, and tags):

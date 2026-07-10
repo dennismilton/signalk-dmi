@@ -14,6 +14,7 @@ const {
 const t = require('./lib/transform');
 const obs = require('./lib/observe');
 const warn = require('./lib/warnings');
+const influx = require('./lib/influx');
 
 const ISO = (d) => new Date(d).toISOString();
 
@@ -79,9 +80,28 @@ module.exports = function (app) {
   // Notification paths currently raised for active warnings, so lapsed ones clear.
   const activeWarnPaths = new Set();
 
-  plugin.schema = {
+  // Schema is a FUNCTION so the InfluxDB history status is detected fresh each time
+  // the admin opens Plugin Config, and shown inline. Detection is read-only (never
+  // writes signalk-to-influxdb2's config).
+  plugin.schema = function () {
+    let historyInfo;
+    try { historyInfo = influx.detect(app, Object.keys(META)); }
+    catch (e) { historyInfo = { summary: `History & trends: detection error (${e.message}). Live DMI data is unaffected.`, snippet: '' }; }
+    return {
     type: 'object',
     properties: {
+      historyGuidance: {
+        type: 'boolean', default: true,
+        title: 'Show history & trends (InfluxDB) guidance',
+        description:
+          'STATUS — ' + historyInfo.summary
+          + (historyInfo.snippet && historyInfo.state !== 'covered'
+            ? '  Ready-to-paste signalk-to-influxdb2 filteringRules:  ' + historyInfo.snippet
+            : '')
+          + '  (Informational only — signalk-dmi never edits another plugin\'s config; '
+          + 'add the paths yourself in signalk-to-influxdb2. Untick to silence the '
+          + 'startup history hint in the plugin status/log.)',
+      },
       positionSource: {
         type: 'string', enum: ['vessel', 'fixed'], default: 'vessel',
         enumNames: ['Vessel GPS (navigation.position)', 'Fixed coordinates'],
@@ -261,6 +281,7 @@ module.exports = function (app) {
           + 'broad default that covers most of Danish waters. Default: North Sea – Baltic.',
       },
     },
+    };
   };
 
   // ---- position -----------------------------------------------------------
@@ -611,6 +632,7 @@ module.exports = function (app) {
         weatherProvider: true, observations: true, tier1: true, waves: true, ocean: true,
         warnings: true, warningNotifications: true, warningCountries: ['denmark'],
         harmonieCollection: 'harmonie_dini_sf', wamCollection: 'wam_dw', dkssCollection: 'dkss_nsbs',
+        historyGuidance: true,
       },
       opts || {}
     );
@@ -637,7 +659,20 @@ module.exports = function (app) {
       setTimeout(pollWarnings, 6000);
       warnTimer = setInterval(pollWarnings, period);
     }
-    app.setPluginStatus(`DMI running (poll every ${options.pollIntervalMinutes} min)`);
+    // History / trends (InfluxDB) — detect + guide (read-only; never writes the
+    // other plugin's config). Always logged; a compact hint is appended to the
+    // plugin status only when guidance is on and DMI isn't being persisted yet.
+    let historyHint = '';
+    try {
+      const info = influx.detect(app, Object.keys(META));
+      app.debug(`InfluxDB history: ${info.summary}`);
+      if (options.historyGuidance !== false) {
+        if (info.state === 'not-installed') historyHint = ' · history: install signalk-to-influxdb2 to trend DMI';
+        else if (info.state === 'installed-uncovered') historyHint = ' · history: DMI paths not persisted yet (see config)';
+      }
+    } catch (e) { app.debug(`InfluxDB history detection error: ${e.message}`); }
+
+    app.setPluginStatus(`DMI running (poll every ${options.pollIntervalMinutes} min)${historyHint}`);
   };
 
   plugin.stop = function () {

@@ -74,7 +74,7 @@ the server will silently drop on the next `npm install`; don't do that).
 **1. Build a tarball** from a checkout of this repo (on any machine with Node):
 
 ```bash
-npm pack            # produces signalk-dmi-<version>.tgz, e.g. signalk-dmi-0.3.2.tgz
+npm pack            # produces signalk-dmi-<version>.tgz, e.g. signalk-dmi-0.4.0.tgz
 ```
 
 **2. Put the tarball into the server's configuration directory.**
@@ -82,14 +82,14 @@ npm pack            # produces signalk-dmi-<version>.tgz, e.g. signalk-dmi-0.3.2
 Standard install — copy it into `~/.signalk`:
 
 ```bash
-cp signalk-dmi-0.3.2.tgz ~/.signalk/
+cp signalk-dmi-0.4.0.tgz ~/.signalk/
 ```
 
 Docker server — copy it into the config volume (the host path you bind-mounted to
 `/home/node/.signalk`), for example:
 
 ```bash
-docker cp signalk-dmi-0.3.2.tgz <your-signalk-container>:/home/node/.signalk/
+docker cp signalk-dmi-0.4.0.tgz <your-signalk-container>:/home/node/.signalk/
 ```
 
 **3. Install the tarball** from the configuration directory:
@@ -97,13 +97,13 @@ docker cp signalk-dmi-0.3.2.tgz <your-signalk-container>:/home/node/.signalk/
 ```bash
 # standard install
 cd ~/.signalk
-npm install ./signalk-dmi-0.3.2.tgz --no-audit --no-fund
+npm install ./signalk-dmi-0.4.0.tgz --no-audit --no-fund
 
 # OR Docker server
-docker exec -w /home/node/.signalk <your-signalk-container> npm install ./signalk-dmi-0.3.2.tgz --no-audit --no-fund
+docker exec -w /home/node/.signalk <your-signalk-container> npm install ./signalk-dmi-0.4.0.tgz --no-audit --no-fund
 ```
 
-This adds `"signalk-dmi": "file:signalk-dmi-0.3.2.tgz"` to the config-dir
+This adds `"signalk-dmi": "file:signalk-dmi-0.4.0.tgz"` to the config-dir
 `package.json` and unpacks it into `node_modules`.
 
 **4. Restart** the Signal K server (restart the service, or the Docker container).
@@ -205,7 +205,6 @@ plugin. This is entirely optional and independent of signalk-dmi.
      { "allow": true,  "path": "environment\\.water\\." },
      { "allow": true,  "path": "environment\\.tide\\." },
      { "allow": true,  "path": "environment\\.current\\." },
-     { "allow": true,  "path": "environment\\.forecast\\." },
      { "allow": false, "path": ".*" }
    ]
    ```
@@ -213,9 +212,12 @@ plugin. This is entirely optional and independent of signalk-dmi.
    `environment\.outside\.` covers temperature, pressure, humidity, wind **and**
    the extended `horizontalVisibility` / `cloudCover` / `precipitationRate` paths;
    `environment\.water\.` covers water temperature/level and waves/swell;
-   `environment\.tide\.`, `environment\.current\.` and `environment\.forecast\.`
-   cover the rest of the DMI output. (These prefixes also match any same-prefix
-   non-DMI paths you publish — harmless for an allow-list.)
+   `environment\.tide\.` and `environment\.current\.` cover the rest of the DMI
+   output. (These are exactly the `environment.*` groups signalk-dmi publishes;
+   they also match any same-prefix non-DMI paths — harmless for an allow-list.)
+   The plugin shows this same list — and whether it is already applied — in its
+   own **Plugin Config** (see the *History & trends* status field), so you can
+   copy it straight from there.
 
 3. **Restart** the server. After some data accumulates, confirm history flows via
    the Signal K **v2 History API** (replace host/port; add a login/token or enable
