@@ -1,0 +1,42 @@
+{
+  "name": "signalk-dmi",
+  "version": "0.4.0",
+  "description": "Signal K plugin that ingests DMI (Danish Meteorological Institute) free open data — HARMONIE forecasts, met observations, WAM waves, DKSS ocean (sea level, current, water temperature) — into Signal K paths and the v2 Weather API. Authoritative Danish met/ocean data for vessels in Danish and adjacent waters.",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-weather",
+    "dmi",
+    "denmark",
+    "weather",
+    "forecast",
+    "marine",
+    "ocean",
+    "waves"
+  ],
+  "signalk-plugin-enabled-by-default": false,
+  "author": "Dennis Milton <dmtamsen@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennismilton/signalk-dmi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dennismilton/signalk-dmi/issues"
+  },
+  "homepage": "https://github.com/dennismilton/signalk-dmi#readme",
+  "files": [
+    "index.js",
+    "lib/",
+    "README.md",
+    "LICENSE",
+    "INSTALL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

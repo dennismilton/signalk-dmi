@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.local
+*.log
+npm-debug.log*
+.DS_Store
+.itest/
+# build artifacts
+*.tgz
+
+# Internal dev docs — research/test evidence/publish runbook/investigations. NEVER public.
+docs/internal/
