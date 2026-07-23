@@ -106,9 +106,10 @@ Current conditions + marine, so any consumer reading `environment.outside.wind.*
 | `environment.water.level` / `environment.tide.heightNow` | oceanObs → DKSS | m |
 | `environment.water.waves.significantHeight` / `.period` / `.direction` | WAM | m / s / rad |
 | `environment.water.swell.height` / `.period` / `.direction` | WAM | m / s / rad |
-| `environment.current.drift` / `environment.current.setTrue` | DKSS | m/s / rad |
+| `environment.current.drift` / `environment.current.setTrue` | DKSS → Open-Meteo | m/s / rad |
 | `environment.water.waves.nearbyDistance` / `.nearbyBearing` | WAM (surrounding-area marker) | m / rad |
 | `environment.current.nearbyDistance` / `environment.current.nearbyBearing` | DKSS (surrounding-area marker) | m / rad |
+| `environment.water.waves.source` / `environment.current.source` / `environment.water.temperature.source` | provenance marker | string |
 
 All values are converted to Signal K SI units (K, Pa, m/s, rad, ratio); ocean
 current is derived from the model's u/v components (set = direction flowing toward).
@@ -169,6 +170,30 @@ reading "nearby ~X nm" rather than presenting it as measured at the boat. The ma
 cleared (null) as soon as the exact point returns data again. This is a fetch-layer
 resilience feature only: the requested parameters, the SI mapping, and the marine value
 paths are unchanged.
+
+### Reliable marine fallback (Open-Meteo) — waves never vanish
+
+Even with the surrounding-area probe, DMI can leave marine data empty: the boat sits in
+a wide coastal grid gap, the WAM/DKSS domain doesn't reach, or a **429 storm** blocks the
+fetch. Waves and swell then disappear for hours or days. To stop that, an optional
+fallback fills any empty marine path from the **[Open-Meteo Marine API](https://open-meteo.com/en/docs/marine-weather-api)**
+— free, **no API key**, generous rate limits, global; source models **GWAM / EWAM /
+MFWAM**.
+
+- **DMI stays primary.** Open-Meteo is only queried when DMI's exact point **and** its
+  surrounding-area ring already came up empty for a group (waves/swell, current, or SST).
+  Where DMI has data, it is used unchanged — authoritative for Danish waters.
+- **Honest provenance.** Each filled group publishes a `…source` string:
+  `environment.water.waves.source`, `environment.current.source`,
+  `environment.water.temperature.source` = `DMI-WAM` / `DMI-DKSS` / `DMI` when DMI supplied
+  it, `Open-Meteo` when the fallback filled it, or `DMI-WAM + Open-Meteo` for a mixed wave
+  block. You always know which source each value came from.
+- **Same paths, same units.** Open-Meteo values land on the identical
+  `environment.water.waves.*` / `.swell.*` / `environment.current.*` /
+  `environment.water.temperature` paths, converted to SI (km/h→m/s, °→rad, °C→K).
+- **Robust + non-blocking.** Per-request `AbortController` timeout, fully error-caught
+  (never crashes the plugin), and integrated into the same self-recovery poll loop.
+- Toggle: **Reliable marine fallback (Open-Meteo)** (`openMeteoFallback`, default **ON**).
 
 ### Self-recovery (the poll loop never wedges)
 
@@ -239,6 +264,7 @@ Every field has in-UI help text (its `description`). Full reference:
 | Warning countries | `warningCountries` | multi-select enum (38 MeteoAlarm countries) | `[denmark]` | Which national MeteoAlarm feeds to pull. Add neighbours when crossing borders. Only used when Fetch warnings is ON. |
 | Publish wave data | `waves` | boolean | `true` | WAM model → `environment.water.waves.*` + `.swell.*` (height, period, direction). |
 | Publish ocean data | `ocean` | boolean | `true` | DKSS model → `environment.water.temperature`, `water.level`, `tide.heightNow`, `current.drift/setTrue`. |
+| Reliable marine fallback (Open-Meteo) | `openMeteoFallback` | boolean | `true` | Fill waves/swell/current/SST from the free Open-Meteo Marine API when DMI has a grid gap or 429s, so marine data never vanishes. Each group tagged with a `…source` marker. |
 | HARMONIE forecast model | `harmonieCollection` | enum | `harmonie_dini_sf` | Surface (SF) model for atmospheric data. **DINI** = DK/NL/IE/IS (keep for Danish waters); **IG** = Iceland/Greenland. |
 | WAM wave model | `wamCollection` | enum | `wam_dw` | Wave domain: **Danish Waters** (best near DK), **North Sea & Baltic** (wider), **North Atlantic** (offshore). |
 | DKSS ocean model | `dkssCollection` | enum | `dkss_nsbs` | Ocean domain: **North Sea–Baltic** (widest), **Inner Danish Waters**, **Wadden Sea**, **Limfjord**, **Little Belt**, **Roskilde/Isefjord**. Smallest domain covering your position = best resolution. |
@@ -280,6 +306,11 @@ When using this data you must credit DMI, link the licence, and indicate changes
 Warnings are sourced from **[MeteoAlarm](https://meteoalarm.org)** (EUMETNET), which
 republishes DMI's official warnings under CC BY 4.0 with additional redistribution
 terms; the plugin labels the warning source **"DMI / MeteoAlarm"**.
+
+The optional marine fallback uses **[Open-Meteo](https://open-meteo.com)** (Marine
+Weather API, models GWAM/EWAM/MFWAM), whose data is licensed
+[**CC BY 4.0**](https://open-meteo.com/en/license). Filled values are labelled
+`Open-Meteo` in their `…source` marker.
 
 Plugin code: **MIT** — see [LICENSE](LICENSE).
 

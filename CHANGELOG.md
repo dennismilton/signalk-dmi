@@ -3,6 +3,28 @@
 All notable changes to **signalk-dmi** are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## 0.6.0
+
+- **Reliable marine fallback — waves/swell/current never vanish.** DMI's WAM/DKSS marine
+  models frequently have **no data at the boat** (coastal grid gap) or **429-rate-limit**,
+  so waves and swell used to disappear for hours or days. A new **Open-Meteo Marine API**
+  fallback (free, key-free, unlimited; models GWAM/EWAM/MFWAM) fills any
+  `environment.water.waves.*`, `.swell.*`, `environment.current.*` and
+  `environment.water.temperature` path that DMI left empty. **DMI stays primary** where it
+  has data (authoritative for Danish waters); Open-Meteo only fills the gaps, and only
+  after the DMI exact-point + surrounding-area ring already came up empty.
+  - **Honest source markers.** Each group publishes its provenance:
+    `environment.water.waves.source` / `environment.current.source` /
+    `environment.water.temperature.source` = `"DMI-WAM"` / `"DMI-DKSS"` / `"DMI"` when DMI
+    supplied it, `"Open-Meteo"` when the fallback filled it, or `"DMI-WAM + Open-Meteo"`
+    for a mixed wave block — so it is always clear which source each value came from.
+  - **Config toggle** *Reliable marine fallback (Open-Meteo)* (`openMeteoFallback`, default
+    **ON**). Turn off to keep DMI-only behaviour.
+  - Robust fetch: per-request timeout via `AbortController`, fully error-caught (never
+    crashes the plugin), reuses the boat position and respects the existing self-recovery
+    poll loop. Units converted to SI (km/h→m/s, °→rad, °C→K).
+  - Attribution: Open-Meteo data is CC BY 4.0 (© Open-Meteo.com).
+
 ## 0.5.0
 
 - **Self-recovery — the poll loop can no longer wedge.** The marine/observation poll now

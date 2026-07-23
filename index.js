@@ -13,6 +13,7 @@ const {
   runAndReschedule, pruneStaleLastGood,
 } = require('./lib/dmi');
 const t = require('./lib/transform');
+const openmeteo = require('./lib/openmeteo');
 const obs = require('./lib/observe');
 const warn = require('./lib/warnings');
 const influx = require('./lib/influx');
@@ -65,7 +66,9 @@ module.exports = function (app) {
   plugin.name = 'DMI (Danish Meteorological Institute) free data';
   plugin.description =
     'Danish met/ocean data from DMI Open Data — HARMONIE forecasts, met observations, ' +
-    'WAM waves and DKSS ocean — into Signal K paths and the v2 Weather API. Data: DMI, CC BY 4.0.';
+    'WAM waves and DKSS ocean — into Signal K paths and the v2 Weather API. Reliable ' +
+    'Open-Meteo Marine fallback fills waves/swell/current when DMI has a grid gap. ' +
+    'Data: DMI + Open-Meteo, CC BY 4.0.';
 
   let timer = null;
   let warnTimer = null;
@@ -235,6 +238,19 @@ module.exports = function (app) {
           'Publish DKSS ocean-model data as environment.water.temperature, water.level, '
           + 'tide.heightNow and current.drift/setTrue deltas. Uses the DKSS model chosen '
           + 'below. Turn OFF to skip ocean/current. Default: ON.',
+      },
+      openMeteoFallback: {
+        type: 'boolean', default: true,
+        title: 'Reliable marine fallback (Open-Meteo)',
+        description:
+          'When DMI\'s WAM/DKSS marine models have NO data at the boat (coastal grid '
+          + 'gap) or are rate-limiting (429), fill waves, swell and current from the '
+          + 'free, key-free Open-Meteo Marine API (GWAM/EWAM/MFWAM) so marine data '
+          + 'never simply vanishes. DMI stays primary where it has data (authoritative '
+          + 'for Danish waters); Open-Meteo only fills the gaps. Each group is tagged '
+          + 'with its source — environment.water.waves.source / environment.current.source '
+          + '= "DMI-WAM"/"DMI-DKSS" or "Open-Meteo". Data: Open-Meteo.com, CC BY 4.0. '
+          + 'Default: ON.',
       },
       harmonieCollection: {
         type: 'string', default: 'harmonie_dini_sf',
@@ -577,12 +593,17 @@ module.exports = function (app) {
         const wamRow = rowNearestNow(wam);
         const dkssRow = rowNearestNow(dkss);
         const water = t.waterFromMarine(wamRow, dkssRow);
-        if (typeof water.waveSignificantHeight === 'number') values.push({ path: 'environment.water.waves.significantHeight', value: water.waveSignificantHeight });
-        if (typeof water.wavePeriod === 'number') values.push({ path: 'environment.water.waves.period', value: water.wavePeriod });
-        if (typeof water.waveDirection === 'number') values.push({ path: 'environment.water.waves.direction', value: water.waveDirection });
-        if (typeof water.swellHeight === 'number') values.push({ path: 'environment.water.swell.height', value: water.swellHeight });
-        if (typeof water.swellPeriod === 'number') values.push({ path: 'environment.water.swell.period', value: water.swellPeriod });
-        if (typeof water.swellDirection === 'number') values.push({ path: 'environment.water.swell.direction', value: water.swellDirection });
+        // Marine value map: SK path → value, seeded from DMI. Open-Meteo fills any
+        // path DMI left empty (grid gap / 429 backoff) below, so waves/swell/current
+        // never simply VANISH; each group carries an honest source marker.
+        const marine = {};
+        const put = (path, v) => { if (typeof v === 'number') marine[path] = v; };
+        put('environment.water.waves.significantHeight', water.waveSignificantHeight);
+        put('environment.water.waves.period', water.wavePeriod);
+        put('environment.water.waves.direction', water.waveDirection);
+        put('environment.water.swell.height', water.swellHeight);
+        put('environment.water.swell.period', water.swellPeriod);
+        put('environment.water.swell.direction', water.swellDirection);
         // Ocean CURRENT: prefer whatever the primary DKSS cell already yielded; if that
         // cell reported temp/level but a NULL current vector (a masked-current coastal
         // cell — the boat's usual case, which is why `current.*` went missing while
@@ -608,8 +629,8 @@ module.exports = function (app) {
           const cur = curRow ? t.uvToCurrent(curRow['current-u'], curRow['current-v']) : null;
           if (cur) { curSpeed = cur.drift; curDir = cur.setTrue; curOffset = curRes.offset; }
         }
-        if (typeof curSpeed === 'number') values.push({ path: 'environment.current.drift', value: curSpeed });
-        if (typeof curDir === 'number') values.push({ path: 'environment.current.setTrue', value: curDir });
+        put('environment.current.drift', curSpeed);
+        put('environment.current.setTrue', curDir);
         // Honest-display markers: tag waves/swell (WAM) and current with the offset
         // when the data came from a nearby grid point; publish null to CLEAR the tag
         // once the exact point returns data. Only emitted when the source was queried.
@@ -634,11 +655,38 @@ module.exports = function (app) {
             if (typeof w.level === 'number') level = w.level;
           }
         }
-        if (typeof waterTemp === 'number') values.push({ path: 'environment.water.temperature', value: waterTemp });
+        put('environment.water.temperature', waterTemp);
         if (typeof level === 'number') {
           values.push({ path: 'environment.water.level', value: level });
           values.push({ path: 'environment.tide.heightNow', value: level });
         }
+
+        // ---- Open-Meteo Marine fallback ------------------------------------
+        // Fill any waves/swell/current/temp path DMI left EMPTY (coastal grid gap
+        // or 429 backoff) from the free, key-free Open-Meteo Marine API, so marine
+        // data never simply vanishes. DMI stays primary where it has data. fillGaps
+        // is pure (unit-tested) and reports honest per-group provenance.
+        let sources;
+        const needWaves = options.waves
+          && (!('environment.water.waves.significantHeight' in marine) || !('environment.water.swell.height' in marine));
+        const needCurrent = options.ocean && !('environment.current.drift' in marine);
+        const needTemp = options.ocean && !('environment.water.temperature' in marine);
+        if (options.openMeteoFallback && (needWaves || needCurrent || needTemp)) {
+          const om = await openmeteo.fetchMarineCurrent(lat, lon, { timeoutMs: 8000 })
+            .catch((e) => { app.debug(`Open-Meteo marine fallback failed: ${e.message}`); return null; });
+          const filled = openmeteo.fillGaps(marine, om, { waves: options.waves, ocean: options.ocean });
+          Object.assign(marine, filled.marine);
+          sources = filled.sources;
+          if (om) app.debug(`Open-Meteo marine fallback used (DMI gap) — sources ${JSON.stringify(sources)}`);
+        } else {
+          sources = openmeteo.fillGaps(marine, null, { waves: options.waves, ocean: options.ocean }).sources;
+        }
+        // Honest source markers (strings) — absent when a group produced no data.
+        if (sources.waves) values.push({ path: 'environment.water.waves.source', value: sources.waves });
+        if (sources.current) values.push({ path: 'environment.current.source', value: sources.current });
+        if (sources.temp) values.push({ path: 'environment.water.temperature.source', value: sources.temp });
+        // Publish the assembled marine values (DMI + any Open-Meteo gap-fills).
+        for (const [p, v] of Object.entries(marine)) values.push({ path: p, value: v });
       } catch (e) { app.error(`marine poll failed: ${e.message}`); }
     }
 
@@ -669,6 +717,7 @@ module.exports = function (app) {
       {
         positionSource: 'vessel', pollIntervalMinutes: 30, forecastHours: 48,
         weatherProvider: true, observations: true, tier1: true, waves: true, ocean: true,
+        openMeteoFallback: true,
         warnings: true, warningNotifications: true, warningCountries: ['denmark'],
         harmonieCollection: 'harmonie_dini_sf', wamCollection: 'wam_dw', dkssCollection: 'dkss_nsbs',
         historyGuidance: true,
