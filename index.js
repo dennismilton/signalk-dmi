@@ -10,6 +10,7 @@
 
 const {
   edrPosition, edrPositionNearby, marineCooldownActive, noteMarineProbeResult, obsItems,
+  runAndReschedule, pruneStaleLastGood,
 } = require('./lib/dmi');
 const t = require('./lib/transform');
 const obs = require('./lib/observe');
@@ -68,10 +69,14 @@ module.exports = function (app) {
 
   let timer = null;
   let warnTimer = null;
+  let stopped = false;   // set by plugin.stop so a pending re-arm callback bails out
   let options = {};
   // Last-good value per path, so a poll where a DMI source 429s re-publishes the
-  // previous value (with a fresh timestamp) instead of dropping the path.
+  // previous value (with a fresh timestamp) instead of dropping the path. `lastGoodAt`
+  // records WHEN each value was last genuinely fresh, so a source that stays silent past
+  // the staleness cap is dropped (goes absent) rather than re-published frozen forever.
   const lastGood = {};
+  const lastGoodAt = {};
   // Per-collection ring-probe cooldown (expiry epoch ms). Set when a marine collection's
   // capped surrounding-area probe comes back empty or 429-rate-limited, so the plugin
   // doesn't re-run the whole ring every poll and re-trigger the DMI 429. Cleared on any
@@ -332,7 +337,7 @@ module.exports = function (app) {
         const now = Date.now();
         // While cooling down, skip the ring entirely — just try the cheap exact point.
         const cooling = marineCooldownActive(marineProbeCooldown, collection, now);
-        const res = await edrPositionNearby(collection, lon, lat, params, range, req, { probe: !cooling });
+        const res = await edrPositionNearby(collection, lon, lat, params, range, req, { probe: !cooling, requiredParams: opts.requiredParams });
         const period = Math.max(5, options.pollIntervalMinutes || 30) * 60000;
         const cooled = noteMarineProbeResult(marineProbeCooldown, collection, now, res, 2 * period);
         if (cooled) {
@@ -514,6 +519,10 @@ module.exports = function (app) {
     return best ? best.r : null;
   }
 
+  // Sentinel: pollDeltas returns this when it could not run for lack of a position,
+  // so the resilient scheduler re-arms soon (boot timing) instead of the full interval.
+  const RETRY_SOON = 'retry-soon';
+
   async function pollDeltas() {
     const pos = getPosition();
     if (!pos) {
@@ -522,8 +531,7 @@ module.exports = function (app) {
       // at boot+5s the vessel GPS often hasn't populated navigation.position, so
       // a single skip would leave the plugin silent until the next 30-min tick.
       app.debug('No position yet — retrying DMI poll in 30s');
-      setTimeout(pollDeltas, 30000);
-      return;
+      return RETRY_SOON;
     }
     const { latitude: lat, longitude: lon } = pos;
     const values = [];
@@ -575,19 +583,43 @@ module.exports = function (app) {
         if (typeof water.swellHeight === 'number') values.push({ path: 'environment.water.swell.height', value: water.swellHeight });
         if (typeof water.swellPeriod === 'number') values.push({ path: 'environment.water.swell.period', value: water.swellPeriod });
         if (typeof water.swellDirection === 'number') values.push({ path: 'environment.water.swell.direction', value: water.swellDirection });
-        if (typeof water.surfaceCurrentSpeed === 'number') values.push({ path: 'environment.current.drift', value: water.surfaceCurrentSpeed });
-        if (typeof water.surfaceCurrentDirection === 'number') values.push({ path: 'environment.current.setTrue', value: water.surfaceCurrentDirection });
-        // Honest-display markers: tag waves/swell (WAM) and current (DKSS) with the
-        // offset when the data came from a nearby grid point; publish null to CLEAR
-        // the tag once the exact point returns data again. Only emitted when the
-        // source produced rows at all (empty area → no marker, card shows "—").
+        // Ocean CURRENT: prefer whatever the primary DKSS cell already yielded; if that
+        // cell reported temp/level but a NULL current vector (a masked-current coastal
+        // cell — the boat's usual case, which is why `current.*` went missing while
+        // level/temp published fine), ring SPECIFICALLY for the current vector. A
+        // separate cooldown key means this focused probe can never wedge the working
+        // temp/level path, and a nearby wet cell is used with its honest offset marker.
+        let curSpeed = water.surfaceCurrentSpeed;
+        let curDir = water.surfaceCurrentDirection;
+        let curOffset = typeof curSpeed === 'number' ? (dkss.nearby || null) : null;
+        let curAttempted = dkss.length > 0;
+        if (options.ocean && typeof curSpeed !== 'number') {
+          curAttempted = true;
+          const key = `${options.dkssCollection}:current`;
+          const curCooling = marineCooldownActive(marineProbeCooldown, key, now);
+          const period = Math.max(5, options.pollIntervalMinutes || 30) * 60000;
+          const curRes = await edrPositionNearby(
+            options.dkssCollection, lon, lat, t.DKSS_CURRENT_PARAMS, range, MARINE_REQ,
+            { probe: !curCooling, requiredParams: t.DKSS_CURRENT_PARAMS });
+          const cooled = noteMarineProbeResult(marineProbeCooldown, key, now, curRes, 2 * period);
+          if (cooled) app.debug(`marine current: no nearby current vector (${curRes.rateLimited ? 'DMI 429 — backing off' : 'area empty'}) — cooldown`);
+          else if (curRes.offset) app.debug(`marine current: no vector at point — using nearby grid ~${(curRes.offset.distanceM / 1852).toFixed(1)} nm off`);
+          const curRow = rowNearestNow(curRes.rows);
+          const cur = curRow ? t.uvToCurrent(curRow['current-u'], curRow['current-v']) : null;
+          if (cur) { curSpeed = cur.drift; curDir = cur.setTrue; curOffset = curRes.offset; }
+        }
+        if (typeof curSpeed === 'number') values.push({ path: 'environment.current.drift', value: curSpeed });
+        if (typeof curDir === 'number') values.push({ path: 'environment.current.setTrue', value: curDir });
+        // Honest-display markers: tag waves/swell (WAM) and current with the offset
+        // when the data came from a nearby grid point; publish null to CLEAR the tag
+        // once the exact point returns data. Only emitted when the source was queried.
         if (wam.length) {
           values.push({ path: 'environment.water.waves.nearbyDistance', value: wam.nearby ? wam.nearby.distanceM : null });
           values.push({ path: 'environment.water.waves.nearbyBearing', value: wam.nearby ? wam.nearby.bearingRad : null });
         }
-        if (dkss.length) {
-          values.push({ path: 'environment.current.nearbyDistance', value: dkss.nearby ? dkss.nearby.distanceM : null });
-          values.push({ path: 'environment.current.nearbyBearing', value: dkss.nearby ? dkss.nearby.bearingRad : null });
+        if (curAttempted) {
+          values.push({ path: 'environment.current.nearbyDistance', value: curOffset ? curOffset.distanceM : null });
+          values.push({ path: 'environment.current.nearbyBearing', value: curOffset ? curOffset.bearingRad : null });
         }
         // Water temperature + sea level: prefer observed oceanObs, fall back to DKSS forecast.
         let waterTemp = water.temperature;
@@ -615,13 +647,20 @@ module.exports = function (app) {
     const freshPaths = new Set(values.map((v) => v.path));
     // Record last-good for stable value paths only — never the nearby markers, so a
     // stale "nearby ~X nm" tag can't be re-published over a later exact-point poll.
-    for (const v of values) if (!NEARBY_PATHS.has(v.path)) lastGood[v.path] = v.value;
+    for (const v of values) if (!NEARBY_PATHS.has(v.path)) { lastGood[v.path] = v.value; lastGoodAt[v.path] = now; }
+    // Cap how long a silent source is re-published: past ~4 poll cycles a dead source
+    // goes ABSENT (honest) rather than frozen-but-fresh-timestamped forever — the reason
+    // stale marine data masqueraded as live for days until a manual restart.
+    const period = Math.max(5, options.pollIntervalMinutes || 30) * 60000;
+    const dropped = pruneStaleLastGood(lastGood, lastGoodAt, now, 4 * period);
+    if (dropped.length) app.debug(`DMI last-good expired (source silent > ${Math.round((4 * period) / 60000)} min): ${dropped.join(', ')}`);
     for (const p of Object.keys(lastGood)) {
       if (!freshPaths.has(p)) values.push({ path: p, value: lastGood[p] });
     }
 
     publish(values);
     app.debug(`DMI poll published ${values.length} values (${freshPaths.size} fresh)`);
+    return null;
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -646,18 +685,47 @@ module.exports = function (app) {
       }
     }
 
+    stopped = false;
     emitMeta();
     const period = Math.max(5, options.pollIntervalMinutes) * 60000;
+
+    // Resilient self-scheduling poll loop: each run ALWAYS re-arms the next one (via
+    // runAndReschedule's finally), so a thrown error, a rejected promise, a DMI 429
+    // storm, or a hung fetch can NEVER stop future polls — the mechanism that let the
+    // marine feed die dark for ~4 days until a manual Signal K restart. setInterval is
+    // replaced by setTimeout-after-completion so a slow poll never overlaps the next.
+    function armDeltas(delayMs) {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(runDeltaPoll, delayMs);
+    }
+    async function runDeltaPoll() {
+      timer = null;
+      let next = period;
+      await runAndReschedule(
+        async () => { if ((await pollDeltas()) === RETRY_SOON) next = 30000; },
+        () => armDeltas(next),
+        (e) => app.error(`DMI poll crashed — rescheduling in ${Math.round(period / 60000)} min: ${e.message}`),
+      );
+    }
+    function armWarn(delayMs) {
+      if (stopped) return;
+      if (warnTimer) clearTimeout(warnTimer);
+      warnTimer = setTimeout(runWarnPoll, delayMs);
+    }
+    async function runWarnPoll() {
+      warnTimer = null;
+      await runAndReschedule(pollWarnings, () => armWarn(period),
+        (e) => app.error(`warnings poll crashed — rescheduling: ${e.message}`));
+    }
+
     if (options.observations || options.waves || options.ocean) {
-      // Small delay so the position snapshot has arrived after (re)start.
-      setTimeout(pollDeltas, 5000);
-      timer = setInterval(pollDeltas, period);
+      armDeltas(5000);   // small delay so the position snapshot has arrived after (re)start
     }
     if (options.warnings) {
-      // Warnings are position-independent (region-coded per country feed) — poll
-      // on their own timer so a missing GPS fix never blocks them.
-      setTimeout(pollWarnings, 6000);
-      warnTimer = setInterval(pollWarnings, period);
+      // Warnings are position-independent (region-coded per country feed) — their own
+      // timer so a missing GPS fix never blocks them.
+      armWarn(6000);
     }
     // History / trends (InfluxDB) — detect + guide (read-only; never writes the
     // other plugin's config). Always logged; a compact hint is appended to the
@@ -676,9 +744,10 @@ module.exports = function (app) {
   };
 
   plugin.stop = function () {
-    if (timer) clearInterval(timer);
+    stopped = true;   // any in-flight re-arm callback bails instead of scheduling again
+    if (timer) clearTimeout(timer);
     timer = null;
-    if (warnTimer) clearInterval(warnTimer);
+    if (warnTimer) clearTimeout(warnTimer);
     warnTimer = null;
     if (typeof app.unRegisterWeatherProvider === 'function') {
       try { app.unRegisterWeatherProvider(plugin.id); } catch (e) { /* ignore */ }

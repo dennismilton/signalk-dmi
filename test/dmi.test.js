@@ -261,6 +261,120 @@ test('marine cooldown: empty/429 probe sets a window that suppresses re-probing 
   assert.strictEqual(dmi.marineCooldownActive(map3, 'wam_dw', t0), false);
 });
 
+// --- Fix B: focused current probe (requiredParams) --------------------------
+
+test('hasAllNumeric: needs EVERY param numeric in one row (current vector u AND v)', () => {
+  const both = [{ time: 't', 'current-u': 0.04, 'current-v': 0.02 }];
+  const uOnly = [{ time: 't', 'current-u': 0.04, 'current-v': null }];
+  const masked = [{ time: 't', 'current-u': null, 'current-v': null }];
+  assert.strictEqual(dmi.hasAllNumeric(both, ['current-u', 'current-v']), true);
+  assert.strictEqual(dmi.hasAllNumeric(uOnly, ['current-u', 'current-v']), false);
+  assert.strictEqual(dmi.hasAllNumeric(masked, ['current-u', 'current-v']), false);
+  assert.strictEqual(dmi.hasAllNumeric([], ['current-u', 'current-v']), false);
+});
+
+test('edrPositionNearby requiredParams: mixed cell (temp present, current null) RINGS for current', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    const p = pointOf(url); calls.push(p);
+    const isExact = near(p.lon, BOAT.lon) && near(p.lat, BOAT.lat);
+    // Exact DKSS cell: temp/level present but the CURRENT vector is null-masked. A
+    // nearby cell has a real current vector.
+    return geojson(isExact
+      ? [feature('2026-07-09T12:00:00Z', { 'water-temperature': 15.2, 'current-u': null, 'current-v': null })]
+      : [feature('2026-07-09T12:00:00Z', { 'current-u': 0.05, 'current-v': 0.02 })]);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('dkss_idw', BOAT.lon, BOAT.lat,
+      ['current-u', 'current-v'], null, { tries: 1 }, { gapMs: 0, requiredParams: ['current-u', 'current-v'] });
+    // The mixed exact cell must NOT satisfy the current requirement → ring fires and
+    // the nearby wet current cell is used, tagged with its offset.
+    assert.ok(r.offset, 'masked-current exact cell must trigger the ring for the current vector');
+    assert.strictEqual(r.rows[0]['current-u'], 0.05);
+    assert.strictEqual(r.rows[0]['current-v'], 0.02);
+    assert.strictEqual(calls.length, 2);   // exact (masked current) + first probe (hit)
+  });
+});
+
+test('edrPositionNearby requiredParams: current present at exact → used as-is, no ring', async () => {
+  const calls = [];
+  await withFetch(async (url) => {
+    calls.push(pointOf(url));
+    return geojson([feature('2026-07-09T12:00:00Z', { 'current-u': 0.10, 'current-v': -0.03 })]);
+  }, async () => {
+    const r = await dmi.edrPositionNearby('dkss_idw', BOAT.lon, BOAT.lat,
+      ['current-u', 'current-v'], null, { tries: 1 }, { gapMs: 0, requiredParams: ['current-u', 'current-v'] });
+    assert.strictEqual(r.offset, null);
+    assert.strictEqual(r.rows[0]['current-u'], 0.10);
+    assert.strictEqual(calls.length, 1);   // exact satisfied the requirement — no probe
+  });
+});
+
+// --- Fix A: anti-wedge scheduler + cooldown ---------------------------------
+
+test('noteMarineProbeResult: exact-only 429 (not probed) never opens/extends cooldown', () => {
+  const map = {};
+  const t0 = 1000000;
+  const WINDOW = 60 * 60000;
+  // A bare exact-point 429 during a storm reports rateLimited but probed:false. The old
+  // code opened (and every poll RE-EXTENDED) the cooldown here — wedging the ring dark
+  // for days. It must now leave the cooldown untouched so the ring re-arms next poll.
+  const set = dmi.noteMarineProbeResult(map, 'wam_dw', t0, { found: false, rateLimited: true, probed: false }, WINDOW);
+  assert.strictEqual(set, false);
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0), false);
+});
+
+test('noteMarineProbeResult: cooldown is capped at MAX_MARINE_COOLDOWN_MS', () => {
+  const map = {};
+  const t0 = 1000000;
+  const HUGE = 10 * 60 * 60000;   // 10 h requested (e.g. an enormous poll interval)
+  dmi.noteMarineProbeResult(map, 'wam_dw', t0, { found: false, rateLimited: false, probed: true }, HUGE);
+  // Bounded so the next probe is always re-armed within the 2 h ceiling, not 10 h out.
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0 + dmi.MAX_MARINE_COOLDOWN_MS - 1), true);
+  assert.strictEqual(dmi.marineCooldownActive(map, 'wam_dw', t0 + dmi.MAX_MARINE_COOLDOWN_MS + 1), false);
+});
+
+test('runAndReschedule: ALWAYS reschedules — even when the task throws (never wedges)', async () => {
+  let rescheduled = 0;
+  let errored = 0;
+  // Task throws → onError fires, but reschedule STILL runs (the anti-wedge guarantee).
+  await dmi.runAndReschedule(
+    async () => { throw new Error('DMI 429 storm'); },
+    () => { rescheduled += 1; },
+    () => { errored += 1; },
+  );
+  assert.strictEqual(rescheduled, 1);
+  assert.strictEqual(errored, 1);
+
+  // Task rejects with a bare rejected promise → still reschedules.
+  await dmi.runAndReschedule(
+    () => Promise.reject(new Error('hung fetch')),
+    () => { rescheduled += 1; },
+    () => { errored += 1; },
+  );
+  assert.strictEqual(rescheduled, 2);
+
+  // Task succeeds → reschedules exactly once, no error.
+  const out = await dmi.runAndReschedule(
+    async () => 'ok',
+    () => { rescheduled += 1; },
+    () => { errored += 1; },
+  );
+  assert.strictEqual(rescheduled, 3);
+  assert.strictEqual(errored, 2);
+  assert.strictEqual(out, 'ok');
+});
+
+test('pruneStaleLastGood: drops values past the staleness cap, keeps fresh ones', () => {
+  const now = 5_000_000;
+  const maxStale = 2 * 60 * 60000;   // 2 h
+  const lastGood = { fresh: 1.1, stale: 2.2 };
+  const lastGoodAt = { fresh: now - 60000, stale: now - 3 * 60 * 60000 };  // stale 3 h old
+  const dropped = dmi.pruneStaleLastGood(lastGood, lastGoodAt, now, maxStale);
+  assert.deepStrictEqual(dropped, ['stale']);
+  assert.deepStrictEqual(Object.keys(lastGood), ['fresh']);   // stale gone → path goes ABSENT
+  assert.strictEqual(lastGoodAt.stale, undefined);
+});
+
 test('edrPositionNearby: DKSS mixed cell (real temp, null current) still counts as PRESENT (no regression)', async () => {
   const calls = [];
   await withFetch(async (url) => {

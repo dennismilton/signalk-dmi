@@ -3,6 +3,29 @@
 All notable changes to **signalk-dmi** are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project follows semantic versioning.
 
+## 0.5.0
+
+- **Self-recovery — the poll loop can no longer wedge.** The marine/observation poll now
+  self-schedules with a guaranteed re-arm (`runAndReschedule` runs the next tick in a
+  `finally`), so a thrown error, a rejected promise, a DMI **429 storm**, or a hung fetch
+  can never permanently stop future polls. Previously a sustained 429 could leave the
+  plugin dark for days until a manual Signal K restart. Two supporting bounds:
+  - The marine ring-probe **cooldown no longer re-extends on a bare exact-point 429**
+    (only a real ring probe opens it) and is **capped at 2 h** (`MAX_MARINE_COOLDOWN_MS`),
+    so the surrounding-area probe is always re-armed within the cap.
+  - **Last-good values expire.** A value whose source has been silent for more than ~4
+    poll cycles (~2 h at the 30-min default) is dropped and the path goes **absent**
+    (honest) instead of being re-published frozen-but-fresh-timestamped forever — the
+    reason stale marine data masqueraded as live.
+- **`environment.current.*` now publishes at masked-current cells.** DKSS frequently
+  reports water temperature/level at the boat's exact cell while the **current vector is
+  null-masked**; the old presence test counted the cell as "has data" (temp present), so
+  the surrounding-area ring never fired for current and `current.drift`/`current.setTrue`
+  stayed absent. A **focused current probe** now rings specifically for the current
+  vector (both `current-u` AND `current-v` required) on its own cooldown key, using the
+  nearest wet cell with an honest `environment.current.nearbyDistance`/`nearbyBearing`
+  marker. Temp/level sourcing is unchanged.
+
 ## 0.4.0
 
 - **In-UI InfluxDB history guidance.** The plugin now detects (read-only) whether a

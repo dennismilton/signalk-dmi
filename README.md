@@ -134,11 +134,14 @@ The probe is deliberately gentle on DMI, which HTTP-**429 rate-limits** the mari
 - **A 429 is backoff, not data.** If any call returns 429, the plugin stops probing for
   that poll and relies on the next one — a 429 is never mistaken for an empty cell that
   would fuel more probing (the failure mode that made an earlier build amplify the 429).
-- **Cooldown.** When a collection's capped probe comes back with nothing — genuinely empty
-  or 429-aborted — the plugin remembers that for ~2 poll cycles and, meanwhile, only tries
-  the single exact point (no ring), so it does not re-run the whole probe every 30-minute
-  poll and re-trigger the limit. A numeric hit clears the cooldown at once; otherwise it
-  expires and the area is probed again. Last-good values keep publishing across the window.
+- **Cooldown (bounded).** When a collection's capped probe comes back with nothing —
+  genuinely empty or 429-aborted — the plugin remembers that for ~2 poll cycles and,
+  meanwhile, only tries the single exact point (no ring), so it does not re-run the whole
+  probe every 30-minute poll and re-trigger the limit. A numeric hit clears the cooldown at
+  once; otherwise it expires and the area is probed again. The cooldown is **capped at 2 h**
+  and, crucially, a bare 429 on the single exact-point call does **not** open or extend it —
+  only a real ring probe does — so a sustained 429 storm can never keep re-extending the
+  window and wedge the ring dark (see **Self-recovery** below).
 
 > **Null-masked cells (why this keys on numeric presence, not row count).** A masked
 > DMI grid cell — land, out of the wet domain, or otherwise no-data — does **not**
@@ -150,12 +153,40 @@ The probe is deliberately gentle on DMI, which HTTP-**429 rate-limits** the mari
 > `water-temperature` present while `current-u/v` are null) counts as present, so working
 > ocean temp/level/tide are never ringed away.
 
+> **Current gets its own focused probe.** Because a mixed DKSS cell (temp/level present,
+> current `null`) counts as "has data" above, the surrounding-area ring would not fire for
+> the missing **current vector** — so `environment.current.drift`/`setTrue` stayed absent
+> wherever the boat's exact cell is masked for current but modelled for temp/level (the
+> common coastal case). When the primary DKSS result yields no current, the plugin now runs
+> a **focused current probe** that rings specifically for the current vector — requiring
+> **both** `current-u` and `current-v` — on its own cooldown key, and publishes the nearest
+> wet current cell with its own `environment.current.nearbyDistance`/`nearbyBearing` marker.
+> It never disturbs the temp/level path.
+
 When a value comes from an offset point, the plugin publishes a small honest-display
 marker — `…nearbyDistance` (m) and `…nearbyBearing` (rad) — so a display can label the
 reading "nearby ~X nm" rather than presenting it as measured at the boat. The marker is
 cleared (null) as soon as the exact point returns data again. This is a fetch-layer
 resilience feature only: the requested parameters, the SI mapping, and the marine value
 paths are unchanged.
+
+### Self-recovery (the poll loop never wedges)
+
+DMI's marine EDR is aggressively **429 rate-limited**, and a sustained busy period must
+never leave the plugin permanently dark. The poll loop is **self-healing**:
+
+- **Guaranteed re-arm.** Each poll self-schedules the next one in a `finally`, so a thrown
+  error, a rejected promise, a 429 storm, or a hung fetch can **never** stop future polls.
+  (A slow poll can't overlap the next either — the next is armed only after the current
+  completes.) Position not in the model yet at boot re-arms in 30 s rather than a full
+  interval.
+- **Bounded backoff.** The ring-probe cooldown is capped at 2 h and is not re-extended by
+  bare exact-point 429s, so the surrounding-area probe is always retried within the cap.
+- **No frozen-forever data.** A last-good value keeps re-publishing across a brief source
+  outage, but past ~4 poll cycles (~2 h at the default) a still-silent source is **dropped**
+  and the path goes **absent** — an honest "no data" instead of a stale value wearing a
+  fresh timestamp. Earlier builds could re-publish frozen marine values indefinitely, so a
+  dead feed looked alive until a manual Signal K restart; that can no longer happen.
 
 ## Install
 
