@@ -24,6 +24,7 @@ All notable changes to **signalk-dmi** are documented here. Format based on
     crashes the plugin), reuses the boat position and respects the existing self-recovery
     poll loop. Units converted to SI (km/h→m/s, °→rad, °C→K).
   - Attribution: Open-Meteo data is CC BY 4.0 (© Open-Meteo.com).
+- This CHANGELOG is now included in the published npm tarball.
 
 ## 0.5.0
 
